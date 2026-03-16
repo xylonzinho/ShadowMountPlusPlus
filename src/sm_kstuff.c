@@ -149,6 +149,16 @@ static bool kstuff_sysentvec_is_enabled(intptr_t sysentvec_addr) {
          KSTUFF_SYSENTVEC_DISABLED;
 }
 
+static uint16_t read_kstuff_sysentvec_toggle(intptr_t sysentvec_addr) {
+  return (uint16_t)kernel_getshort(sysentvec_addr +
+                                   KSTUFF_SYSENTVEC_TOGGLE_OFFSET);
+}
+
+static bool kstuff_sysentvec_toggle_is_known(uint16_t value) {
+  return value == KSTUFF_SYSENTVEC_ENABLED ||
+         value == KSTUFF_SYSENTVEC_DISABLED;
+}
+
 static void set_kstuff_sysentvec_enabled(intptr_t sysentvec_addr, bool enabled) {
   (void)kernel_setshort(sysentvec_addr + KSTUFF_SYSENTVEC_TOGGLE_OFFSET,
                         enabled ? KSTUFF_SYSENTVEC_ENABLED
@@ -511,6 +521,16 @@ void sm_kstuff_init(void) {
                                       &g_kstuff.sysentvec_ps4)) {
     log_debug("  [KSTUFF] runtime control unavailable on firmware 0x%08X",
               kernel_get_fw_version());
+    return;
+  }
+
+  uint16_t ps5_toggle = read_kstuff_sysentvec_toggle(g_kstuff.sysentvec_ps5);
+  uint16_t ps4_toggle = read_kstuff_sysentvec_toggle(g_kstuff.sysentvec_ps4);
+  if (!kstuff_sysentvec_toggle_is_known(ps5_toggle) ||
+      !kstuff_sysentvec_toggle_is_known(ps4_toggle)) {
+    log_debug("  [KSTUFF] runtime control disabled: kstuff markers not "
+              "present (ps5=0x%04X ps4=0x%04X)",
+              ps5_toggle, ps4_toggle);
     return;
   }
 
