@@ -1,6 +1,6 @@
 # ShadowMountPlus (PS5)
 
-**Version:** `1.6beta4`
+**Version:** `1.6beta5`
 
 **Repository:** https://github.com/drakmor/shadowMountPlus
 
@@ -19,19 +19,22 @@
 
 | Extension | Mounted FS | Attach backend | Status |
 | --- | --- | --- | --- |
-| `.exfat` | `exfatfs` | `LVD` or `MD` (configurable) | Optimal |
-| `.ffpkg` | `ufs` | `LVD` or `MD` (configurable) | Legacy |
+| `.ffpkg` | `ufs` | `LVD` or `MD` (configurable) | Recommended |
+| `.exfat` | `exfatfs` | `LVD` or `MD` (configurable) | Compatibility / external-drive-only titles |
 | `.ffpfs` | `pfs` | `LVD` | Experimental |
 
 Notes:
 - Backend, read-only mode, and sector size can be configured via `/data/shadowmount/config.ini`.
 - Debug logging is enabled by default (`debug=1`) and writes to console plus `/data/shadowmount/debug.log` (set `debug=0` to disable).
-- **exFAT is the preferred image filesystem, including on 4.xx firmware, with no known reboot/shutdown issues in typical use.**
+- **UFS (`.ffpkg`) is the recommended image format for normal use.**
+- **Use exFAT (`.exfat`) only for titles that need external-drive-style compatibility.**
+- **When building exFAT images manually, keep the cluster size at `64 KB`; smaller clusters can reduce performance.**
 
 ## Recommended FS choice
 
-- Prefer **exFAT (`.exfat`)** in most cases: it is generally more performant, case-insensitive, and does not have reboot/shutdown issues in typical use.
-- Use **UFS (`.ffpkg`)** only when specifically needed for compatibility with your game/setup.
+- Prefer **UFS (`.ffpkg`)** in most cases: this is the recommended default image format for ShadowMountPlus.
+- Use **exFAT (`.exfat`)** only for games that do not work correctly unless they are handled like external-drive content.
+- If you create an **exFAT (`.exfat`)** image manually, use a **`64 KB` cluster size**. Smaller clusters can cause a noticeable performance loss.
 
 ## Runtime config (`/data/shadowmount/config.ini`)
 
@@ -149,6 +152,8 @@ Recommended folder structure:
 
 ## Creating an exFAT image
 
+Recommended only for titles that need external-drive-style compatibility. For general use, prefer `.ffpkg`.
+
 Linux (Ubuntu/Debian):
 - Required components installation:
   - `sudo apt-get update && sudo apt-get install -y exfatprogs exfat-fuse fuse3 rsync`
@@ -160,6 +165,7 @@ Linux (Ubuntu/Debian):
 - Notes:
   - Source folder must be the game root and contain `eboot.bin`.
   - Auto-calculates image size using rounded file allocation + metadata + safety margin.
+  - For manual exFAT builds, keep the cluster size at `64 KB` or you may lose performance.
   - Automatically selects exFAT cluster profile:
   - Large-file profile: `64K`
   - Small/mixed-file profile: `32K`
@@ -170,6 +176,7 @@ Windows:
   - Install OSFMount: https://www.osforensics.com/tools/mount-disk-images.html.
   - Keep `make_image.bat` and `New-OsfExfatImage.ps1` in the same folder.
   - Run `cmd.exe` as Administrator.
+  - If you build an exFAT image manually instead of using the script, keep the cluster size at `64 KB` or you may lose performance.
 - Usage:
   - `make_image.bat "C:\images\game.exfat" "C:\payload\APPXXXX"`
 - Behavior:
