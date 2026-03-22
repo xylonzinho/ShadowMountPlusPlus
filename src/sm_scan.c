@@ -125,15 +125,18 @@ static bool try_collect_candidate_for_directory(
     }
   }
 
+  char tracked_path[MAX_PATH];
+  bool link_matches_source =
+      read_mount_link(title_id, tracked_path, sizeof(tracked_path)) &&
+      strcmp(tracked_path, full_path) == 0;
   if (!app_db_titles_ready) {
+    if (link_matches_source && is_data_mounted(title_id))
+      cache_game_entry(full_path, title_id, title_name);
     return true;
   }
   bool in_app_db = app_db_title_list_contains(app_db_titles, title_id);
   bool installed = in_app_db && is_installed(title_id);
-  char tracked_path[MAX_PATH];
-  bool link_matches_source =
-      installed && read_mount_link(title_id, tracked_path, sizeof(tracked_path)) &&
-      strcmp(tracked_path, full_path) == 0;
+  link_matches_source = installed && link_matches_source;
   bool mounted = false;
   if (link_matches_source) {
     mounted = is_data_mounted(title_id);
