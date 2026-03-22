@@ -86,9 +86,6 @@ static void reset_scanner_root_watch_heads(void) {
 }
 
 static void clear_scan_root_watch_tree_state(int scan_root_index) {
-  if (scan_root_index < 0 || scan_root_index >= get_scan_path_count())
-    return;
-
   g_scanner_root_states[scan_root_index].watch_tree_stale = false;
   g_scanner_root_states[scan_root_index].watch_tree_rebuild_depth = 0;
   g_scanner_root_states[scan_root_index].watch_tree_rebuild_kind =
@@ -259,10 +256,8 @@ static void classify_watch_entry(const char *full_path, unsigned char d_type,
     }
   }
 
-  if (is_dir_out)
-    *is_dir_out = is_dir;
-  if (is_regular_out)
-    *is_regular_out = is_regular;
+  *is_dir_out = is_dir;
+  *is_regular_out = is_regular;
 }
 
 static void link_scanner_watch_entry_to_root(size_t index) {
@@ -454,20 +449,15 @@ static bool resolve_watch_tree_rebuild_target(const scanner_watch_entry_t *entry
   case SCANNER_WATCH_SCAN_BACKPORT_ROOT:
   case SCANNER_WATCH_SCAN_SUBDIR:
     (void)strlcpy(rebuild_path, entry->path, MAX_PATH);
-    if (rebuild_depth_out)
-      *rebuild_depth_out = entry->depth;
-    if (kind_out)
-      *kind_out = entry->kind;
+    *rebuild_depth_out = entry->depth;
+    *kind_out = entry->kind;
     return true;
   case SCANNER_WATCH_SCAN_IMAGE_FILE:
     if (!build_parent_directory_path(entry->path, rebuild_path))
       return false;
-    if (rebuild_depth_out)
-      *rebuild_depth_out = (entry->depth > 0u) ? (uint8_t)(entry->depth - 1u) : 0u;
-    if (kind_out) {
-      *kind_out =
-          (entry->depth <= 1u) ? SCANNER_WATCH_SCAN_ROOT : SCANNER_WATCH_SCAN_SUBDIR;
-    }
+    *rebuild_depth_out = (entry->depth > 0u) ? (uint8_t)(entry->depth - 1u) : 0u;
+    *kind_out =
+        (entry->depth <= 1u) ? SCANNER_WATCH_SCAN_ROOT : SCANNER_WATCH_SCAN_SUBDIR;
     return true;
   default:
     return false;
@@ -633,17 +623,11 @@ static void clear_all_dirty_scan_roots(void) {
 }
 
 static void schedule_scan_root_cleanup(int scan_root_index) {
-  if (scan_root_index < 0 || scan_root_index >= get_scan_path_count())
-    return;
-
   g_scanner_root_states[scan_root_index].cleanup_pending = true;
 }
 
 static void schedule_scan_root_dirty(int scan_root_index, uint64_t now_us,
                                      bool immediate) {
-  if (scan_root_index < 0 || scan_root_index >= get_scan_path_count())
-    return;
-
   scanner_root_state_t *state = &g_scanner_root_states[scan_root_index];
   uint64_t ready_after_us =
       immediate ? now_us : now_us + scanner_stability_wait_us();
@@ -895,8 +879,7 @@ static void build_wait_timeout(struct timespec *timeout, uint64_t now_us,
 
 static bool process_scanner_events(int kq, const struct timespec *timeout,
                                    bool *timed_out_out) {
-  if (timed_out_out)
-    *timed_out_out = false;
+  *timed_out_out = false;
 
   struct kevent events[SCANNER_EVENT_BATCH];
   int nev = kevent(kq, NULL, 0, events, SCANNER_EVENT_BATCH, timeout);
@@ -909,8 +892,7 @@ static bool process_scanner_events(int kq, const struct timespec *timeout,
   }
 
   if (nev == 0) {
-    if (timed_out_out)
-      *timed_out_out = true;
+    *timed_out_out = true;
     return true;
   }
 

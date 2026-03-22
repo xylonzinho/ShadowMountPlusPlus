@@ -1,18 +1,70 @@
 #include "sm_platform.h"
 #include "sm_game_cache.h"
+#include "sm_config_mount.h"
 #include "sm_filesystem.h"
+#include "sm_image_cache.h"
 #include "sm_limits.h"
 #include "sm_log.h"
+#include "sm_path_utils.h"
 #include "sm_title_state.h"
 
 struct GameCache {
   char path[MAX_PATH];
   char title_id[MAX_TITLE_ID];
   char title_name[MAX_TITLE_NAME];
+  char owning_scan_root[MAX_PATH];
   bool valid;
 };
 
 static struct GameCache g_game_cache[MAX_PENDING];
+
+static bool resolve_game_cache_owning_scan_root(const char *path,
+                                                char owning_scan_root[MAX_PATH]) {
+  char resolved_source_path[MAX_PATH];
+  const char *match_path = path;
+  owning_scan_root[0] = '\0';
+
+  if (is_under_image_mount_base(path) &&
+      resolve_image_source_from_mount_cache(path, resolved_source_path,
+                                            sizeof(resolved_source_path))) {
+    match_path = resolved_source_path;
+  }
+
+  size_t best_match_len = 0;
+  for (int i = 0; i < get_scan_path_count(); i++) {
+    const char *scan_path = get_scan_path(i);
+    if (!path_matches_root_or_child(match_path, scan_path))
+      continue;
+
+    size_t scan_path_len = strlen(scan_path);
+    if (scan_path_len <= best_match_len)
+      continue;
+
+    (void)strlcpy(owning_scan_root, scan_path, MAX_PATH);
+    best_match_len = scan_path_len;
+  }
+
+  return owning_scan_root[0] != '\0';
+}
+
+static void write_game_cache_slot(struct GameCache *entry, const char *path,
+                                  const char *title_id,
+                                  const char *title_name,
+                                  const char *owning_scan_root) {
+  (void)strlcpy(entry->path, path, sizeof(entry->path));
+  (void)strlcpy(entry->title_id, title_id, sizeof(entry->title_id));
+  (void)strlcpy(entry->title_name, title_name, sizeof(entry->title_name));
+  (void)strlcpy(entry->owning_scan_root, owning_scan_root,
+                sizeof(entry->owning_scan_root));
+  entry->valid = true;
+}
+
+static bool ensure_game_cache_owning_scan_root(struct GameCache *entry) {
+  if (entry->owning_scan_root[0] != '\0')
+    return true;
+
+  return resolve_game_cache_owning_scan_root(entry->path, entry->owning_scan_root);
+}
 
 static void clear_game_cache_slot(int index, const char *reason) {
   if (index < 0 || index >= MAX_PENDING || !g_game_cache[index].valid)
@@ -34,6 +86,9 @@ static void clear_game_cache_slot(int index, const char *reason) {
 
 void cache_game_entry(const char *path, const char *title_id,
                       const char *title_name) {
+  char owning_scan_root[MAX_PATH];
+  (void)resolve_game_cache_owning_scan_root(path, owning_scan_root);
+
   for (int k = 0; k < MAX_PENDING; k++) {
     if (!g_game_cache[k].valid)
       continue;
@@ -41,24 +96,15 @@ void cache_game_entry(const char *path, const char *title_id,
         strcmp(g_game_cache[k].title_id, title_id) != 0) {
       continue;
     }
-
-    (void)strlcpy(g_game_cache[k].path, path, sizeof(g_game_cache[k].path));
-    (void)strlcpy(g_game_cache[k].title_id, title_id,
-                  sizeof(g_game_cache[k].title_id));
-    (void)strlcpy(g_game_cache[k].title_name, title_name,
-                  sizeof(g_game_cache[k].title_name));
-    g_game_cache[k].valid = true;
+    write_game_cache_slot(&g_game_cache[k], path, title_id, title_name,
+                          owning_scan_root);
     return;
   }
 
   for (int k = 0; k < MAX_PENDING; k++) {
     if (!g_game_cache[k].valid) {
-      (void)strlcpy(g_game_cache[k].path, path, sizeof(g_game_cache[k].path));
-      (void)strlcpy(g_game_cache[k].title_id, title_id,
-                    sizeof(g_game_cache[k].title_id));
-      (void)strlcpy(g_game_cache[k].title_name, title_name,
-                    sizeof(g_game_cache[k].title_name));
-      g_game_cache[k].valid = true;
+      write_game_cache_slot(&g_game_cache[k], path, title_id, title_name,
+                            owning_scan_root);
       return;
     }
   }
@@ -83,7 +129,11 @@ void prune_game_cache_for_root(const char *root) {
   for (int k = 0; k < MAX_PENDING; k++) {
     if (!g_game_cache[k].valid)
       continue;
-    if (!path_matches_root_or_child(g_game_cache[k].path, root))
+    const char *entry_root =
+        ensure_game_cache_owning_scan_root(&g_game_cache[k])
+            ? g_game_cache[k].owning_scan_root
+            : g_game_cache[k].path;
+    if (!path_matches_root_or_child(entry_root, root))
       continue;
     if (access(g_game_cache[k].path, F_OK) == 0)
       continue;
@@ -99,12 +149,15 @@ void for_each_cached_game_entry(const char *root, game_cache_iter_fn fn,
   for (int k = 0; k < MAX_PENDING; k++) {
     if (!g_game_cache[k].valid)
       continue;
-    if (root && root[0] != '\0' &&
-        !path_matches_root_or_child(g_game_cache[k].path, root)) {
+    bool has_owning_scan_root = ensure_game_cache_owning_scan_root(&g_game_cache[k]);
+    const char *entry_root =
+        has_owning_scan_root ? g_game_cache[k].owning_scan_root : g_game_cache[k].path;
+    if (root && root[0] != '\0' && strcmp(entry_root, root) != 0) {
       continue;
     }
     if (!fn(g_game_cache[k].path, g_game_cache[k].title_id,
-            g_game_cache[k].title_name, ctx)) {
+            g_game_cache[k].title_name,
+            has_owning_scan_root ? g_game_cache[k].owning_scan_root : NULL, ctx)) {
       break;
     }
   }

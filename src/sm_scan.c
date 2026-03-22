@@ -261,43 +261,12 @@ static void collect_candidates_with_depth(
   closedir(d);
 }
 
-static bool resolve_backport_mount_context(const char *title_id,
-                                           const char *source_path,
-                                           int scan_path_count,
-                                           const char **owning_scan_path_out,
-                                           char backport_path[MAX_PATH],
-                                           char system_ex_path[MAX_PATH]) {
-  char backport_source_path[MAX_PATH];
-  if (is_under_image_mount_base(source_path)) {
-    if (!resolve_image_source_from_mount_cache(source_path,
-                                               backport_source_path,
-                                               sizeof(backport_source_path))) {
-      return false;
-    }
-  } else {
-    (void)strlcpy(backport_source_path, source_path,
-                  sizeof(backport_source_path));
-  }
-
-  const char *owning_scan_path = NULL;
-  size_t owning_scan_path_len = 0;
-  for (int i = 0; i < scan_path_count; i++) {
-    const char *scan_path = get_scan_path(i);
-    if (!path_matches_root_or_child(backport_source_path, scan_path))
-      continue;
-
-    size_t scan_path_len = strlen(scan_path);
-    if (owning_scan_path && scan_path_len <= owning_scan_path_len)
-      continue;
-
-    owning_scan_path = scan_path;
-    owning_scan_path_len = scan_path_len;
-  }
-  if (!owning_scan_path)
+static bool build_backport_mount_context(const char *title_id,
+                                         const char *owning_scan_path,
+                                         char backport_path[MAX_PATH],
+                                         char system_ex_path[MAX_PATH]) {
+  if (!owning_scan_path || owning_scan_path[0] == '\0')
     return false;
-  if (owning_scan_path_out)
-    *owning_scan_path_out = owning_scan_path;
-
   char backport_root[MAX_PATH];
   if (!build_backports_root_path(owning_scan_path, backport_root))
     return false;
@@ -308,14 +277,13 @@ static bool resolve_backport_mount_context(const char *title_id,
 }
 
 typedef struct {
-  int scan_path_count;
-  const char *scan_root_filter;
   bool *unstable_found_out;
 } backport_overlay_ctx_t;
 
 static bool mount_backport_overlay_for_cached_game(const char *source_path,
                                                    const char *title_id,
                                                    const char *title_name,
+                                                   const char *owning_scan_root,
                                                    void *ctx_ptr) {
   (void)title_name;
 
@@ -325,15 +293,8 @@ static bool mount_backport_overlay_for_cached_game(const char *source_path,
   backport_overlay_ctx_t *ctx = (backport_overlay_ctx_t *)ctx_ptr;
   char backport_path[MAX_PATH];
   char system_ex_path[MAX_PATH];
-  const char *owning_scan_path = NULL;
-  if (!resolve_backport_mount_context(title_id, source_path, ctx->scan_path_count,
-                                      &owning_scan_path, backport_path,
-                                      system_ex_path)) {
-    return true;
-  }
-  if (ctx->scan_root_filter &&
-      (!owning_scan_path ||
-       strcmp(owning_scan_path, ctx->scan_root_filter) != 0)) {
+  if (!build_backport_mount_context(title_id, owning_scan_root, backport_path,
+                                    system_ex_path)) {
     return true;
   }
 
@@ -361,16 +322,11 @@ static bool mount_backport_overlay_for_cached_game(const char *source_path,
 
 static void mount_backport_overlays_internal(const char *scan_root_filter,
                                              bool *unstable_found_out) {
-  int scan_path_count = get_scan_path_count();
-  if (scan_path_count == 0)
-    return;
-
   backport_overlay_ctx_t ctx = {
-      .scan_path_count = scan_path_count,
-      .scan_root_filter = scan_root_filter,
       .unstable_found_out = unstable_found_out,
   };
-  for_each_cached_game_entry(NULL, mount_backport_overlay_for_cached_game, &ctx);
+  for_each_cached_game_entry(scan_root_filter, mount_backport_overlay_for_cached_game,
+                             &ctx);
 }
 
 void mount_backport_overlays(bool *unstable_found_out) {

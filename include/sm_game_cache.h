@@ -4,7 +4,8 @@
 #include <stdbool.h>
 
 typedef bool (*game_cache_iter_fn)(const char *path, const char *title_id,
-                                   const char *title_name, void *ctx);
+                                   const char *title_name,
+                                   const char *owning_scan_root, void *ctx);
 
 // Cache resolved metadata for a mounted or discovered game.
 void cache_game_entry(const char *path, const char *title_id,

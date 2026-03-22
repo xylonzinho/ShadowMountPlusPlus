@@ -69,13 +69,17 @@ bool should_stop_requested(void) {
 void request_shutdown_stop(const char *reason) {
   const char *resolved_reason =
       (reason && reason[0] != '\0') ? reason : "unknown shutdown source";
+  static char g_shutdown_stop_reason[128];
   bool already_requested =
       atomic_exchange_explicit(&g_shutdown_on_going_stop_requested, true,
                                memory_order_acq_rel);
   if (!already_requested) {
+    (void)strlcpy(g_shutdown_stop_reason, resolved_reason,
+                  sizeof(g_shutdown_stop_reason));
     atomic_store_explicit(&g_shutdown_stop_reason_bits,
-                          (uintptr_t)resolved_reason, memory_order_release);
-    log_debug("[SHUTDOWN] requested by %s", resolved_reason);
+                          (uintptr_t)g_shutdown_stop_reason,
+                          memory_order_release);
+    log_debug("[SHUTDOWN] requested by %s", g_shutdown_stop_reason);
   }
   g_stop_requested = 1;
   sm_scanner_wake();
