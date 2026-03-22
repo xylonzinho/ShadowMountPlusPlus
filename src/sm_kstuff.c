@@ -28,6 +28,7 @@ typedef struct {
 typedef struct {
   intptr_t sysentvec_ps5;
   intptr_t sysentvec_ps4;
+  bool probe_available;
   bool supported;
   bool restore_on_empty;
   bool current_app_focus_valid;
@@ -39,6 +40,8 @@ typedef struct {
 static kstuff_state_t g_kstuff;
 static _Atomic uint32_t g_pending_app_focus_id;
 static _Atomic bool g_pending_app_focus_valid;
+
+static bool refresh_kstuff_support_state(void);
 
 static bool resolve_kstuff_sysentvec_addrs(intptr_t *ps5_out, intptr_t *ps4_out) {
   if (!ps5_out || !ps4_out)
@@ -166,7 +169,7 @@ static void set_kstuff_sysentvec_enabled(intptr_t sysentvec_addr, bool enabled) 
 }
 
 static bool read_kstuff_enabled_state(bool *ps5_out, bool *ps4_out) {
-  if (!g_kstuff.supported)
+  if (!refresh_kstuff_support_state())
     return false;
 
   bool ps5_enabled = kstuff_sysentvec_is_enabled(g_kstuff.sysentvec_ps5);
@@ -176,6 +179,19 @@ static bool read_kstuff_enabled_state(bool *ps5_out, bool *ps4_out) {
   if (ps4_out)
     *ps4_out = ps4_enabled;
   return ps5_enabled && ps4_enabled;
+}
+
+static bool refresh_kstuff_support_state(void) {
+  if (!g_kstuff.probe_available) {
+    g_kstuff.supported = false;
+    return false;
+  }
+
+  uint16_t ps5_toggle = read_kstuff_sysentvec_toggle(g_kstuff.sysentvec_ps5);
+  uint16_t ps4_toggle = read_kstuff_sysentvec_toggle(g_kstuff.sysentvec_ps4);
+  g_kstuff.supported = kstuff_sysentvec_toggle_is_known(ps5_toggle) &&
+                       kstuff_sysentvec_toggle_is_known(ps4_toggle);
+  return g_kstuff.supported;
 }
 
 static bool kstuff_state_matches(bool enabled, bool ps5_enabled,
@@ -233,6 +249,12 @@ static void restore_kstuff_if_needed(const char *reason) {
     }
   }
 
+  if (!sm_kstuff_is_supported()) {
+    g_kstuff.restore_retry_us =
+        now_us == 0 ? 1 : now_us + GAME_LIFECYCLE_POLL_INTERVAL_US;
+    return;
+  }
+
   bool enabled = sm_kstuff_is_enabled();
   if (!enabled)
     enabled = sm_kstuff_set_enabled(true, true);
@@ -263,6 +285,14 @@ static void maybe_apply_kstuff_pause_for_slot(kstuff_game_entry_t *entry) {
 
   if (g_kstuff.current_app_focus_valid && entry->app_id != 0 &&
       g_kstuff.current_app_focus_id != entry->app_id) {
+    return;
+  }
+
+  if (!sm_kstuff_is_supported()) {
+    log_debug("  [KSTUFF] skipping auto-pause for %s pid=%ld: kstuff not "
+              "available",
+              entry->title_id, (long)entry->pid);
+    memset(entry, 0, sizeof(*entry));
     return;
   }
 
@@ -376,7 +406,7 @@ uint64_t sm_kstuff_game_next_wake_us(uint64_t now_us) {
 }
 
 bool sm_kstuff_is_supported(void) {
-  return g_kstuff.supported;
+  return refresh_kstuff_support_state();
 }
 
 bool sm_kstuff_is_enabled(void) {
@@ -385,12 +415,11 @@ bool sm_kstuff_is_enabled(void) {
 
 static bool apply_kstuff_enabled_state(bool enabled, bool notify_user,
                                        bool *fully_applied_out) {
-  if (!g_kstuff.supported)
-    return false;
-
   bool ps5_enabled = false;
   bool ps4_enabled = false;
   bool is_enabled = read_kstuff_enabled_state(&ps5_enabled, &ps4_enabled);
+  if (!g_kstuff.supported)
+    return false;
   bool fully_applied = kstuff_state_matches(enabled, ps5_enabled, ps4_enabled);
   if (fully_applied) {
     if (fully_applied_out)
@@ -428,7 +457,7 @@ bool sm_kstuff_set_enabled(bool enabled, bool notify_user) {
 }
 
 bool sm_kstuff_game_feature_enabled(void) {
-  return runtime_config()->kstuff_game_auto_toggle && sm_kstuff_is_supported();
+  return runtime_config()->kstuff_game_auto_toggle && g_kstuff.probe_available;
 }
 
 void sm_kstuff_game_on_exec(pid_t pid, const char *title_id, uint32_t app_id,
@@ -523,18 +552,14 @@ void sm_kstuff_init(void) {
               kernel_get_fw_version());
     return;
   }
+  g_kstuff.probe_available = true;
 
-  uint16_t ps5_toggle = read_kstuff_sysentvec_toggle(g_kstuff.sysentvec_ps5);
-  uint16_t ps4_toggle = read_kstuff_sysentvec_toggle(g_kstuff.sysentvec_ps4);
-  if (!kstuff_sysentvec_toggle_is_known(ps5_toggle) ||
-      !kstuff_sysentvec_toggle_is_known(ps4_toggle)) {
-    log_debug("  [KSTUFF] runtime control disabled: kstuff markers not "
-              "present (ps5=0x%04X ps4=0x%04X)",
-              ps5_toggle, ps4_toggle);
+  if (!refresh_kstuff_support_state()) {
+    log_debug("  [KSTUFF] runtime control probe ready; kstuff not present at "
+              "startup");
     return;
   }
 
-  g_kstuff.supported = true;
   log_debug("  [KSTUFF] runtime control ready (image_delay=%u "
             "direct_delay=%u)",
             runtime_config()->kstuff_pause_delay_image_seconds,
