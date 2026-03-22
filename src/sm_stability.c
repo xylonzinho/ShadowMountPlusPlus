@@ -4,6 +4,12 @@
 #include "sm_log.h"
 #include "sm_types.h"
 
+static time_t get_path_last_change_time(const struct stat *st) {
+  if (!st)
+    return 0;
+  return (st->st_ctime > st->st_mtime) ? st->st_ctime : st->st_mtime;
+}
+
 bool is_path_stable_now(const char *path, double *root_diff_out,
                         int *stat_errno_out) {
   struct stat st;
@@ -20,7 +26,7 @@ bool is_path_stable_now(const char *path, double *root_diff_out,
     return false;
   }
 
-  double root_diff = difftime(now, st.st_mtime);
+  double root_diff = difftime(now, get_path_last_change_time(&st));
   if (root_diff_out)
     *root_diff_out = root_diff;
   if (root_diff < 0.0)
