@@ -14,6 +14,7 @@
 #include "sm_filesystem.h"
 #include "sm_image.h"
 #include "sm_scan.h"
+#include "sm_scanner.h"
 #include "sm_install.h"
 #include "sm_appdb.h"
 #include "sm_limits.h"
@@ -40,6 +41,7 @@ static _Atomic(uintptr_t) g_scan_now_reason_bits = 0;
 static void on_signal(int sig) {
   (void)sig;
   g_stop_requested = 1;
+  sm_scanner_wake();
 }
 
 void install_signal_handlers(void) {
@@ -76,6 +78,7 @@ void request_shutdown_stop(const char *reason) {
     log_debug("[SHUTDOWN] requested by %s", resolved_reason);
   }
   g_stop_requested = 1;
+  sm_scanner_wake();
 }
 
 void request_scan_now(const char *reason) {
@@ -88,6 +91,7 @@ void request_scan_now(const char *reason) {
                           memory_order_release);
     log_debug("[SCAN] immediate scan requested by %s", resolved_reason);
   }
+  sm_scanner_wake();
 }
 
 bool consume_scan_now_request(const char **reason_out) {
@@ -280,9 +284,6 @@ int main(void) {
   bool restarted_previous_instance = false;
   bool kstuff_runtime_enabled = false;
   pid_t existing_pid = 0;
-  const char *scan_reason = NULL;
-  scan_candidate_t candidates[MAX_PENDING];
-  memset(candidates, 0, sizeof(candidates));
 
   sceUserServiceInitialize(0);
   sceAppInstUtilInitialize();
@@ -315,6 +316,8 @@ int main(void) {
 
   (void)unlink(LOG_FILE_PREV);
   (void)rename(LOG_FILE, LOG_FILE_PREV);
+  if (!sm_scanner_init())
+    log_debug("  [SCAN] scanner service init incomplete; fallback path remains available");
 
   char firmware_version[32];
   get_firmware_version_string(firmware_version);
@@ -362,53 +365,14 @@ int main(void) {
 
   cleanup_staged_mount_links();
   cleanup_duplicate_title_mounts();
-  cleanup_lost_sources_before_scan();
-  int total_found_games = 0;
-  int candidate_count =
-      collect_scan_candidates(candidates, MAX_PENDING, &total_found_games);
-  if (candidate_count > 0) {
-    int new_games = 0;
-    for (int i = 0; i < candidate_count; i++) {
-      if (!candidates[i].installed)
-        new_games++;
-    }
-    if (new_games > 0)
-      notify_system_info("Found %d new games. Executing...", new_games);
-    process_scan_candidates(candidates, candidate_count);
-  }
-  mount_backport_overlays();
-  notify_system_rich(true, "Library Synchronized.\nFound %d games.",
-                     total_found_games);
-
-  while (true) {
-    if (should_stop_requested()) {
-      log_debug("[SHUTDOWN] stop requested");
-      break;
-    }
-
-    if (!consume_scan_now_request(&scan_reason)) {
-      if (sleep_with_stop_check(runtime_config()->scan_interval_us)) {
-        log_debug("[SHUTDOWN] stop requested during sleep");
-        break;
-      }
-      (void)consume_scan_now_request(&scan_reason);
-    }
-
-    if (scan_reason) {
-      log_debug("[SCAN] running immediate scan (%s)", scan_reason);
-      scan_reason = NULL;
-    }
-
-    cleanup_lost_sources_before_scan();
-    candidate_count = collect_scan_candidates(candidates, MAX_PENDING, NULL);
-    if (candidate_count > 0)
-      process_scan_candidates(candidates, candidate_count);
-    mount_backport_overlays();
-  }
+  if (!sm_scanner_run_startup_sync())
+    goto shutdown;
+  sm_scanner_run_loop();
 
 shutdown:
   sm_shellcore_flags_stop();
   stop_game_lifecycle_watcher();
+  sm_scanner_shutdown();
   if (kstuff_runtime_enabled)
     sm_kstuff_shutdown();
   shutdown_title_mounts();
