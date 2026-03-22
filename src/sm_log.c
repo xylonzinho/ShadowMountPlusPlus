@@ -357,10 +357,9 @@ void notify_system(const char *fmt, ...) {
 
 void notify_image_mount_failed(const char *path, int mount_err) {
   if (g_last_error.valid && g_last_error.message[0] != '\0') {
-    notify_system("Image mount failed: 0x%08X (%s)\n%s\n%s",
-                  (uint32_t)mount_err, strerror(mount_err),
-                  g_last_error.message,
-                  (g_last_error.path[0] != '\0') ? g_last_error.path : path);
+    const char *error_path =
+        (g_last_error.path[0] != '\0') ? g_last_error.path : path;
+    notify_system("%s\n%s", g_last_error.message, error_path);
     g_last_error.notified = true;
     return;
   }

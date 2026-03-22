@@ -409,6 +409,62 @@ static bool directory_has_visible_entries(const char *path) {
   return found;
 }
 
+static bool is_image_mount_root_accessible(const char *mount_point,
+                                           int *error_out) {
+  if (error_out)
+    *error_out = 0;
+
+  DIR *dir = opendir(mount_point);
+  if (!dir) {
+    if (error_out)
+      *error_out = errno;
+    return false;
+  }
+  closedir(dir);
+  return true;
+}
+
+static bool reject_mounted_image_io(const char *file_path,
+                                    attach_backend_t attach_backend, int unit_id,
+                                    const char *devname,
+                                    const char *mount_point, int io_err,
+                                    const char *stage) {
+  sm_error_set("IMG", io_err, file_path, "Mounted image is unreadable or damaged");
+  log_debug("  [IMG][%s] unreadable or damaged mount (%s -> %s, %s): %s",
+            attach_backend_name(attach_backend), devname, mount_point, stage,
+            strerror(io_err));
+  (void)unmount_image(file_path, unit_id, attach_backend);
+  errno = io_err;
+  return false;
+}
+
+static bool prepare_image_mount_retry(const image_cache_entry_t *cached_entry,
+                                      char mount_point[MAX_PATH],
+                                      char source_path[MAX_PATH]) {
+  build_image_mount_point(cached_entry->path, mount_point);
+  (void)strlcpy(source_path, cached_entry->path, MAX_PATH);
+
+  if (is_active_image_mount_point(mount_point)) {
+    int root_err = 0;
+    if (is_image_mount_root_accessible(mount_point, &root_err))
+      return false;
+
+    log_debug("  [IMG][%s] mount unreadable, retrying: %s -> %s: %s",
+              attach_backend_name(cached_entry->backend), source_path,
+              mount_point, strerror(root_err));
+    if (!unmount_image(source_path, cached_entry->unit_id, cached_entry->backend))
+      return false;
+  } else {
+    log_debug("  [IMG][%s] mount lost, retrying: %s -> %s",
+              attach_backend_name(cached_entry->backend), source_path,
+              mount_point);
+    clear_cached_game(mount_point);
+  }
+
+  clear_missing_param_entry(mount_point);
+  return true;
+}
+
 static bool reuse_existing_image_mount(const char *file_path,
                                        const char *mount_point,
                                        bool *cache_failed_out) {
@@ -418,12 +474,22 @@ static bool reuse_existing_image_mount(const char *file_path,
   struct stat mount_st;
   if (stat(mount_point, &mount_st) != 0 || !S_ISDIR(mount_st.st_mode))
     return false;
-  if (!directory_has_visible_entries(mount_point))
-    return false;
 
   attach_backend_t existing_backend = ATTACH_BACKEND_NONE;
   int existing_unit = -1;
   if (resolve_device_from_mount(mount_point, &existing_backend, &existing_unit)) {
+    int root_err = 0;
+    if (!is_image_mount_root_accessible(mount_point, &root_err)) {
+      log_debug("  [IMG][%s] Existing mount unreadable, reattaching: %s -> %s: %s",
+                attach_backend_name(existing_backend), file_path, mount_point,
+                strerror(root_err));
+      if (!unmount_image(file_path, existing_unit, existing_backend)) {
+        if (cache_failed_out)
+          *cache_failed_out = true;
+        return false;
+      }
+      return false;
+    }
     if (!cache_image_mount(file_path, mount_point, existing_unit,
                            existing_backend)) {
       sm_error_set("IMG", ENOSPC, file_path,
@@ -440,6 +506,9 @@ static bool reuse_existing_image_mount(const char *file_path,
               attach_backend_name(existing_backend), mount_point);
     return true;
   }
+
+  if (!directory_has_visible_entries(mount_point))
+    return false;
 
   log_debug("  [IMG] Mount point exists and is non-empty but is not an active "
             "mount, reattaching: %s", mount_point);
@@ -596,9 +665,8 @@ static bool validate_mounted_image(const char *file_path, image_fs_type_t fs_typ
                                    const char *mount_point) {
   struct statfs mounted_sfs;
   if (statfs(mount_point, &mounted_sfs) != 0) {
-    log_debug("  [IMG][%s] statfs after mount failed for %s: %s",
-              attach_backend_name(attach_backend), mount_point, strerror(errno));
-    return true;
+    return reject_mounted_image_io(file_path, attach_backend, unit_id, devname,
+                                   mount_point, errno, "statfs");
   }
 
   uint32_t min_device_sector =
@@ -606,24 +674,31 @@ static bool validate_mounted_image(const char *file_path, image_fs_type_t fs_typ
                                             : get_lvd_sector_size(file_path,
                                                                   fs_type);
   uint64_t fs_block_size = (uint64_t)mounted_sfs.f_bsize;
-  if (fs_block_size >= (uint64_t)min_device_sector)
-    return true;
+  if (fs_block_size < (uint64_t)min_device_sector) {
+    sm_error_set("IMG", EINVAL, file_path,
+                 "Filesystem cluster size (%llu) is smaller than device "
+                 "sector size (%u) for %s",
+                 (unsigned long long)fs_block_size, min_device_sector, devname);
+    log_debug("  [IMG][%s] %s", attach_backend_name(attach_backend),
+              sm_last_error()->message);
+    notify_system("Image mount rejected:\n%s\nCluster size is too small "
+                  "(%llu < %u).\nUse a larger cluster size in the image or "
+                  "lower sector size in config.",
+                  file_path, (unsigned long long)fs_block_size,
+                  min_device_sector);
+    sm_error_mark_notified();
+    (void)unmount_image(file_path, unit_id, attach_backend);
+    errno = EINVAL;
+    return false;
+  }
 
-  sm_error_set("IMG", EINVAL, file_path,
-               "Filesystem cluster size (%llu) is smaller than device "
-               "sector size (%u) for %s",
-               (unsigned long long)fs_block_size, min_device_sector, devname);
-  log_debug("  [IMG][%s] %s", attach_backend_name(attach_backend),
-            sm_last_error()->message);
-  notify_system("Image mount rejected:\n%s\nCluster size is too small "
-                "(%llu < %u).\nUse a larger cluster size in the image or "
-                "lower sector size in config.",
-                file_path, (unsigned long long)fs_block_size,
-                min_device_sector);
-  sm_error_mark_notified();
-  (void)unmount_image(file_path, unit_id, attach_backend);
-  errno = EINVAL;
-  return false;
+  int root_err = 0;
+  if (!is_image_mount_root_accessible(mount_point, &root_err)) {
+    return reject_mounted_image_io(file_path, attach_backend, unit_id, devname,
+                                   mount_point, root_err, "root access");
+  }
+
+  return true;
 }
 
 // --- Image Attach + nmount Pipeline ---
@@ -677,15 +752,15 @@ bool mount_image(const char *file_path, image_fs_type_t fs_type) {
     return false;
   }
 
-  log_debug("  [IMG][%s] Mounted (%s) %s -> %s",
-            attach_backend_name(attach_backend), image_fs_name(fs_type),
-            devname, mount_point);
-  log_fs_stats("IMG", mount_point, image_fs_name(fs_type));
-
   if (!validate_mounted_image(file_path, fs_type, attach_backend, unit_id,
                               devname, mount_point)) {
     return false;
   }
+
+  log_debug("  [IMG][%s] Mounted (%s) %s -> %s",
+            attach_backend_name(attach_backend), image_fs_name(fs_type),
+            devname, mount_point);
+  log_fs_stats("IMG", mount_point, image_fs_name(fs_type));
 
   if (!cache_image_mount(file_path, mount_point, unit_id, attach_backend)) {
     sm_error_set("IMG", ENOSPC, file_path,
@@ -803,18 +878,9 @@ void cleanup_stale_image_mounts(void) {
 
     image_fs_type_t fs_type = detect_image_fs_type(cached_entry.path);
     char mount_point[MAX_PATH];
-    build_image_mount_point(cached_entry.path, mount_point);
-    if (is_active_image_mount_point(mount_point))
-      continue;
-
     char source_path[MAX_PATH];
-    (void)strlcpy(source_path, cached_entry.path, sizeof(source_path));
-    log_debug("  [IMG][%s] mount lost, retrying: %s -> %s",
-              attach_backend_name(cached_entry.backend), source_path,
-              mount_point);
-
-    clear_cached_game(mount_point);
-    clear_missing_param_entry(mount_point);
+    if (!prepare_image_mount_retry(&cached_entry, mount_point, source_path))
+      continue;
 
     invalidate_image_cache_entry(k);
     if (mount_image(source_path, fs_type)) {
@@ -860,18 +926,9 @@ void cleanup_stale_image_mounts_for_root(const char *root) {
 
     image_fs_type_t fs_type = detect_image_fs_type(cached_entry.path);
     char mount_point[MAX_PATH];
-    build_image_mount_point(cached_entry.path, mount_point);
-    if (is_active_image_mount_point(mount_point))
-      continue;
-
     char source_path[MAX_PATH];
-    (void)strlcpy(source_path, cached_entry.path, sizeof(source_path));
-    log_debug("  [IMG][%s] mount lost, retrying: %s -> %s",
-              attach_backend_name(cached_entry.backend), source_path,
-              mount_point);
-
-    clear_cached_game(mount_point);
-    clear_missing_param_entry(mount_point);
+    if (!prepare_image_mount_retry(&cached_entry, mount_point, source_path))
+      continue;
 
     invalidate_image_cache_entry(k);
     if (mount_image(source_path, fs_type)) {
