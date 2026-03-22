@@ -14,6 +14,8 @@ void store_cached_game_info(const char *path, const struct stat *param_st,
                             const char *title_name);
 // Drop expired entries from path-based retry and metadata state.
 void prune_path_state(void);
+// Drop expired entries that belong to a specific scan root.
+void prune_path_state_for_root(const char *root);
 // Return whether scans for a path are temporarily suppressed after failures.
 bool is_missing_param_scan_limited(const char *path);
 // Record a missing param.json failure for scan backoff.

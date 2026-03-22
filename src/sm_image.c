@@ -144,6 +144,10 @@ static image_fs_type_t detect_image_fs_type(const char *name) {
   return IMAGE_FS_UNKNOWN;
 }
 
+bool is_supported_image_file_name(const char *name) {
+  return detect_image_fs_type(name) != IMAGE_FS_UNKNOWN;
+}
+
 static const char *image_fs_name(image_fs_type_t fs_type) {
   switch (fs_type) {
   case IMAGE_FS_UFS:
@@ -825,6 +829,63 @@ void cleanup_stale_image_mounts(void) {
   }
 }
 
+void cleanup_stale_image_mounts_for_root(const char *root) {
+  if (!root || root[0] == '\0') {
+    cleanup_stale_image_mounts();
+    return;
+  }
+
+  if (should_stop_requested())
+    return;
+
+  for (int k = 0; k < MAX_IMAGE_MOUNTS; k++) {
+    image_cache_entry_t cached_entry;
+    if (should_stop_requested())
+      return;
+    if (!get_image_cache_entry(k, &cached_entry))
+      continue;
+    if (!path_matches_root_or_child(cached_entry.path, root) &&
+        !path_matches_root_or_child(cached_entry.mount_point, root)) {
+      continue;
+    }
+
+    if (access(cached_entry.path, F_OK) != 0) {
+      log_debug("  [IMG][%s] Source removed, unmounting: %s",
+                attach_backend_name(cached_entry.backend), cached_entry.path);
+      if (unmount_image(cached_entry.path, cached_entry.unit_id,
+                        cached_entry.backend))
+        invalidate_image_cache_entry(k);
+      continue;
+    }
+
+    image_fs_type_t fs_type = detect_image_fs_type(cached_entry.path);
+    char mount_point[MAX_PATH];
+    build_image_mount_point(cached_entry.path, mount_point);
+    if (is_active_image_mount_point(mount_point))
+      continue;
+
+    char source_path[MAX_PATH];
+    (void)strlcpy(source_path, cached_entry.path, sizeof(source_path));
+    log_debug("  [IMG][%s] mount lost, retrying: %s -> %s",
+              attach_backend_name(cached_entry.backend), source_path,
+              mount_point);
+
+    clear_cached_game(mount_point);
+    clear_missing_param_entry(mount_point);
+
+    invalidate_image_cache_entry(k);
+    if (mount_image(source_path, fs_type)) {
+      clear_image_mount_attempts(source_path);
+      continue;
+    }
+
+    int mount_err = errno;
+    if (bump_image_mount_attempts(source_path) == 1 && !sm_error_notified()) {
+      notify_image_mount_failed(source_path, mount_err);
+    }
+  }
+}
+
 void cleanup_mount_dirs(void) {
   DIR *d = opendir(IMAGE_MOUNT_BASE);
   if (!d) {
@@ -868,12 +929,16 @@ void cleanup_mount_dirs(void) {
   closedir(d);
 }
 
-void maybe_mount_image_file(const char *full_path, const char *display_name) {
+void maybe_mount_image_file(const char *full_path, const char *display_name,
+                            bool *unstable_out) {
   image_fs_type_t fs_type = detect_image_fs_type(display_name);
   if (fs_type == IMAGE_FS_UNKNOWN)
     return;
-  if (!is_source_stable_for_mount(full_path, display_name, "IMG"))
+  if (!is_source_stable_for_mount(full_path, display_name, "IMG")) {
+    if (unstable_out)
+      *unstable_out = true;
     return;
+  }
   if (is_image_mount_limited(full_path))
     return;
 

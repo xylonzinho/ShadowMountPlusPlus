@@ -1,5 +1,6 @@
 #include "sm_platform.h"
 #include "sm_path_state.h"
+#include "sm_filesystem.h"
 #include "sm_hash.h"
 #include "sm_limits.h"
 #include "sm_log.h"
@@ -154,6 +155,27 @@ void prune_path_state(void) {
   bool changed = false;
   for (int k = 0; k < PATH_STATE_CAPACITY; k++) {
     if (!g_path_state[k].valid || g_path_state[k].path[0] == '\0')
+      continue;
+    if (access(g_path_state[k].path, F_OK) == 0)
+      continue;
+    memset(&g_path_state[k], 0, sizeof(g_path_state[k]));
+    changed = true;
+  }
+  if (changed)
+    rebuild_path_state_hash();
+}
+
+void prune_path_state_for_root(const char *root) {
+  if (!root || root[0] == '\0') {
+    prune_path_state();
+    return;
+  }
+
+  bool changed = false;
+  for (int k = 0; k < PATH_STATE_CAPACITY; k++) {
+    if (!g_path_state[k].valid || g_path_state[k].path[0] == '\0')
+      continue;
+    if (!path_matches_root_or_child(g_path_state[k].path, root))
       continue;
     if (access(g_path_state[k].path, F_OK) == 0)
       continue;

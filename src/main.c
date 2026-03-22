@@ -311,7 +311,7 @@ int main(void) {
   (void)unlink(LOG_FILE_PREV);
   (void)rename(LOG_FILE, LOG_FILE_PREV);
   if (!sm_scanner_init())
-    log_debug("  [SCAN] scanner service init incomplete; fallback path remains available");
+    log_debug("  [SCAN] scanner service init incomplete; steady-state scanner will stop if initialization cannot be completed");
 
   char firmware_version[32];
   get_firmware_version_string(firmware_version);

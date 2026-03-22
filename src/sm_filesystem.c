@@ -168,6 +168,22 @@ static bool source_path_needs_cleanup(const char *source_path,
   return access(eboot_path, F_OK) != 0;
 }
 
+static bool resolve_mount_image_source_path(const title_link_paths_t *paths,
+                                            const char *source_path,
+                                            char image_source_path[MAX_PATH]) {
+  image_source_path[0] = '\0';
+  if (!is_under_image_mount_base(source_path))
+    return false;
+
+  if (read_mount_link_file(paths->mount_image_link, image_source_path, MAX_PATH)) {
+    (void)cache_image_source_mapping(image_source_path, source_path);
+    return true;
+  }
+
+  return resolve_image_source_from_mount_cache(source_path, image_source_path,
+                                               MAX_PATH);
+}
+
 static bool cleanup_staged_mount_links_entry(const char *title_id,
                                              const title_link_paths_t *paths,
                                              void *ctx) {
@@ -844,20 +860,33 @@ static bool cleanup_mount_links_entry(const char *title_id,
     return true;
 
   char source_path[MAX_PATH];
+  char image_source_path[MAX_PATH];
+  bool has_image_source = false;
   bool should_remove = false;
   bool matches_removed_source = false;
   if (!read_mount_link_file(paths->mount_link, source_path, sizeof(source_path))) {
     should_remove = true;
+  } else {
+    has_image_source =
+        resolve_mount_image_source_path(paths, source_path, image_source_path);
   }
 
   if (!should_remove) {
     if (ctx->removed_source_root && ctx->removed_source_root[0] != '\0') {
       matches_removed_source =
-          path_matches_root_or_child(source_path, ctx->removed_source_root);
-      should_remove = matches_removed_source;
+          path_matches_root_or_child(source_path, ctx->removed_source_root) ||
+          (has_image_source &&
+           path_matches_root_or_child(image_source_path,
+                                      ctx->removed_source_root));
+      if (!matches_removed_source)
+        return true;
+      should_remove = (has_image_source && access(image_source_path, F_OK) != 0) ||
+                      source_path_needs_cleanup(source_path,
+                                                &ctx->tried_image_recovery);
     } else {
-      should_remove =
-          source_path_needs_cleanup(source_path, &ctx->tried_image_recovery);
+      should_remove = (has_image_source && access(image_source_path, F_OK) != 0) ||
+                      source_path_needs_cleanup(source_path,
+                                                &ctx->tried_image_recovery);
     }
   }
 

@@ -13,11 +13,16 @@ bool mount_image(const char *file_path, image_fs_type_t fs_type);
 bool unmount_image(const char *file_path, int unit_id, attach_backend_t backend);
 // Reconcile cached image mounts with current sources and remount if needed.
 void cleanup_stale_image_mounts(void);
+// Reconcile cached image mounts that belong to a specific scan root.
+void cleanup_stale_image_mounts_for_root(const char *root);
 // Unmount every cached image mount during shutdown.
 bool shutdown_image_mounts(void);
 // Remove empty directories left under the image mount root.
 void cleanup_mount_dirs(void);
 // Mount an image file if it is stable and not currently rate-limited.
-void maybe_mount_image_file(const char *full_path, const char *name);
+void maybe_mount_image_file(const char *full_path, const char *name,
+                            bool *unstable_out);
+// Return true when the filename has a supported image extension.
+bool is_supported_image_file_name(const char *name);
 
 #endif

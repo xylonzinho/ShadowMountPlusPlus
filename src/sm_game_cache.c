@@ -1,5 +1,6 @@
 #include "sm_platform.h"
 #include "sm_game_cache.h"
+#include "sm_filesystem.h"
 #include "sm_limits.h"
 #include "sm_log.h"
 #include "sm_title_state.h"
@@ -34,6 +35,23 @@ static void clear_game_cache_slot(int index, const char *reason) {
 void cache_game_entry(const char *path, const char *title_id,
                       const char *title_name) {
   for (int k = 0; k < MAX_PENDING; k++) {
+    if (!g_game_cache[k].valid)
+      continue;
+    if (strcmp(g_game_cache[k].path, path) != 0 &&
+        strcmp(g_game_cache[k].title_id, title_id) != 0) {
+      continue;
+    }
+
+    (void)strlcpy(g_game_cache[k].path, path, sizeof(g_game_cache[k].path));
+    (void)strlcpy(g_game_cache[k].title_id, title_id,
+                  sizeof(g_game_cache[k].title_id));
+    (void)strlcpy(g_game_cache[k].title_name, title_name,
+                  sizeof(g_game_cache[k].title_name));
+    g_game_cache[k].valid = true;
+    return;
+  }
+
+  for (int k = 0; k < MAX_PENDING; k++) {
     if (!g_game_cache[k].valid) {
       (void)strlcpy(g_game_cache[k].path, path, sizeof(g_game_cache[k].path));
       (void)strlcpy(g_game_cache[k].title_id, title_id,
@@ -53,6 +71,42 @@ void prune_game_cache(void) {
     if (access(g_game_cache[k].path, F_OK) == 0)
       continue;
     clear_game_cache_slot(k, "source removed");
+  }
+}
+
+void prune_game_cache_for_root(const char *root) {
+  if (!root || root[0] == '\0') {
+    prune_game_cache();
+    return;
+  }
+
+  for (int k = 0; k < MAX_PENDING; k++) {
+    if (!g_game_cache[k].valid)
+      continue;
+    if (!path_matches_root_or_child(g_game_cache[k].path, root))
+      continue;
+    if (access(g_game_cache[k].path, F_OK) == 0)
+      continue;
+    clear_game_cache_slot(k, "source removed");
+  }
+}
+
+void for_each_cached_game_entry(const char *root, game_cache_iter_fn fn,
+                                void *ctx) {
+  if (!fn)
+    return;
+
+  for (int k = 0; k < MAX_PENDING; k++) {
+    if (!g_game_cache[k].valid)
+      continue;
+    if (root && root[0] != '\0' &&
+        !path_matches_root_or_child(g_game_cache[k].path, root)) {
+      continue;
+    }
+    if (!fn(g_game_cache[k].path, g_game_cache[k].title_id,
+            g_game_cache[k].title_name, ctx)) {
+      break;
+    }
   }
 }
 
