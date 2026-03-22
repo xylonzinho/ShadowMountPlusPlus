@@ -102,6 +102,12 @@ Kstuff game lifecycle behavior:
 - Image-backed launches use `kstuff_pause_delay_image_seconds`; direct/non-image launches use `kstuff_pause_delay_direct_seconds`.
 - `kstuff_no_pause` skips auto-pause entirely for matching title IDs.
 - `kstuff_delay` overrides the pause delay for matching title IDs, regardless of image/direct launch type.
+- A game source folder may optionally contain `autopause.txt`; it is read once at launch time.
+- Priority order is: `kstuff_delay` from `config.ini` -> `autopause.txt` -> global direct/image default delay.
+- If `autopause.txt` contains only a number, that value is used for direct launches and doubled for image-backed launches.
+- `autopause.txt` may also use:
+  - `direct=<seconds>`
+  - `image=<seconds>`
 - If both kinds of rule target the same title, `kstuff_no_pause` takes priority.
 - When the last tracked game stops, ShadowMount immediately enables kstuff again if it was the component that disabled it.
 

@@ -17,10 +17,12 @@
 typedef struct {
   bool active;
   bool image_backed;
+  bool autopause_delay_valid;
   bool pause_applied;
   bool focus_override_active;
   pid_t pid;
   uint32_t app_id;
+  uint32_t autopause_delay_seconds;
   uint64_t launch_time_us;
   uint64_t pause_deadline_us;
   char title_id[MAX_TITLE_ID];
@@ -45,8 +47,159 @@ static _Atomic bool g_pending_config_reload;
 
 static bool refresh_kstuff_support_state(void);
 static uint32_t get_pause_delay_seconds_for_title(const char *title_id,
-                                                  bool *image_backed_out);
+                                                  bool *image_backed_out,
+                                                  uint32_t *autopause_delay_out,
+                                                  bool *autopause_delay_valid_out);
 static void restore_kstuff_if_needed(const char *reason);
+
+static char *trim_ascii_inplace(char *s) {
+  while (*s == ' ' || *s == '\t' || *s == '\r' || *s == '\n')
+    s++;
+
+  size_t len = strlen(s);
+  while (len > 0) {
+    char ch = s[len - 1u];
+    if (ch != ' ' && ch != '\t' && ch != '\r' && ch != '\n')
+      break;
+    s[len - 1u] = '\0';
+    len--;
+  }
+
+  return s;
+}
+
+static char *strip_inline_comment(char *s) {
+  char *comment = strpbrk(s, "#;");
+  if (comment)
+    *comment = '\0';
+  return trim_ascii_inplace(s);
+}
+
+static bool parse_pause_delay_seconds(const char *value,
+                                      uint32_t *delay_seconds_out) {
+  if (!value || !delay_seconds_out)
+    return false;
+
+  errno = 0;
+  char *end = NULL;
+  unsigned long parsed = strtoul(value, &end, 10);
+  if (errno != 0 || end == value || *end != '\0' ||
+      parsed > MAX_KSTUFF_PAUSE_DELAY_SECONDS) {
+    return false;
+  }
+
+  *delay_seconds_out = (uint32_t)parsed;
+  return true;
+}
+
+static bool get_autopause_delay_for_source(const char *source_path,
+                                           bool image_backed,
+                                           uint32_t *delay_seconds_out) {
+  if (!source_path || source_path[0] == '\0' || !delay_seconds_out)
+    return false;
+
+  char autopause_path[MAX_PATH];
+  int written = snprintf(autopause_path, sizeof(autopause_path), "%s/%s",
+                         source_path, "autopause.txt");
+  if (written <= 0 || (size_t)written >= sizeof(autopause_path))
+    return false;
+
+  FILE *f = fopen(autopause_path, "r");
+  if (!f)
+    return false;
+
+  char line[128];
+  bool have_scalar = false;
+  bool have_direct = false;
+  bool have_image = false;
+  uint32_t scalar_delay = 0;
+  uint32_t direct_delay = 0;
+  uint32_t image_delay = 0;
+
+  while (fgets(line, sizeof(line), f)) {
+    char *value = strip_inline_comment(line);
+    if (value[0] == '\0')
+      continue;
+
+    char *eq = strchr(value, '=');
+    if (!eq) {
+      if (!have_scalar && parse_pause_delay_seconds(value, &scalar_delay))
+        have_scalar = true;
+      continue;
+    }
+
+    *eq = '\0';
+    char *key = trim_ascii_inplace(value);
+    char *arg = trim_ascii_inplace(eq + 1);
+    uint32_t parsed_delay = 0;
+    if (!parse_pause_delay_seconds(arg, &parsed_delay))
+      continue;
+
+    if (strcasecmp(key, "direct") == 0) {
+      direct_delay = parsed_delay;
+      have_direct = true;
+    } else if (strcasecmp(key, "image") == 0) {
+      image_delay = parsed_delay;
+      have_image = true;
+    }
+  }
+
+  fclose(f);
+
+  if (image_backed && have_image) {
+    *delay_seconds_out = image_delay;
+    return true;
+  }
+  if (!image_backed && have_direct) {
+    *delay_seconds_out = direct_delay;
+    return true;
+  }
+  if (have_scalar) {
+    uint64_t delay_seconds = scalar_delay;
+    if (image_backed)
+      delay_seconds *= 2u;
+    if (delay_seconds > MAX_KSTUFF_PAUSE_DELAY_SECONDS)
+      delay_seconds = MAX_KSTUFF_PAUSE_DELAY_SECONDS;
+    *delay_seconds_out = (uint32_t)delay_seconds;
+    return true;
+  }
+
+  return false;
+}
+
+static bool resolve_title_pause_source(const char *title_id,
+                                       char source_path[MAX_PATH],
+                                       bool *image_backed_out) {
+  source_path[0] = '\0';
+  *image_backed_out = false;
+
+  if (!title_id)
+    return false;
+
+  if (!read_mount_link(title_id, source_path, MAX_PATH))
+    return false;
+
+  *image_backed_out = is_under_image_mount_base(source_path);
+  return true;
+}
+
+static uint32_t get_configured_pause_delay_seconds(const char *title_id,
+                                                   bool image_backed,
+                                                   bool *override_applied_out) {
+  const runtime_config_t *cfg = runtime_config();
+  uint32_t delay_seconds =
+      image_backed ? cfg->kstuff_pause_delay_image_seconds
+                   : cfg->kstuff_pause_delay_direct_seconds;
+  uint32_t override_delay_seconds = 0;
+  if (get_kstuff_pause_delay_override_for_title(title_id,
+                                                &override_delay_seconds)) {
+    *override_applied_out = true;
+    return override_delay_seconds;
+  }
+
+  *override_applied_out = false;
+  return delay_seconds;
+}
 
 static bool resolve_kstuff_sysentvec_addrs(intptr_t *ps5_out, intptr_t *ps4_out) {
   if (!ps5_out || !ps4_out)
@@ -240,36 +393,47 @@ static void apply_kstuff_config_reload(void) {
   if (g_kstuff.game.pause_applied)
     return;
 
-  bool image_backed = false;
+  bool override_applied = false;
   uint32_t delay_seconds =
-      get_pause_delay_seconds_for_title(g_kstuff.game.title_id, &image_backed);
-  g_kstuff.game.image_backed = image_backed;
+      get_configured_pause_delay_seconds(g_kstuff.game.title_id,
+                                         g_kstuff.game.image_backed,
+                                         &override_applied);
+  if (!override_applied && g_kstuff.game.autopause_delay_valid) {
+    delay_seconds = g_kstuff.game.autopause_delay_seconds;
+  }
   g_kstuff.game.pause_deadline_us =
       g_kstuff.game.launch_time_us == 0
           ? 0
           : g_kstuff.game.launch_time_us + (uint64_t)delay_seconds * 1000000ull;
   log_debug("  [KSTUFF] updated tracked game config: %s source=%s pause_delay=%us",
-            g_kstuff.game.title_id, image_backed ? "image" : "direct",
+            g_kstuff.game.title_id,
+            g_kstuff.game.image_backed ? "image" : "direct",
             delay_seconds);
 }
 
 static uint32_t get_pause_delay_seconds_for_title(const char *title_id,
-                                                  bool *image_backed_out) {
+                                                  bool *image_backed_out,
+                                                  uint32_t *autopause_delay_out,
+                                                  bool *autopause_delay_valid_out) {
   char source_path[MAX_PATH];
-  bool image_backed =
-      read_mount_link(title_id, source_path, sizeof(source_path)) &&
-      is_under_image_mount_base(source_path);
+  bool image_backed = false;
+  (void)resolve_title_pause_source(title_id, source_path, &image_backed);
 
-  if (image_backed_out)
-    *image_backed_out = image_backed;
+  *image_backed_out = image_backed;
+  *autopause_delay_out = 0;
+  *autopause_delay_valid_out = false;
 
+  bool override_applied = false;
   uint32_t delay_seconds =
-      image_backed ? runtime_config()->kstuff_pause_delay_image_seconds
-                   : runtime_config()->kstuff_pause_delay_direct_seconds;
-  uint32_t override_delay_seconds = 0;
-  if (get_kstuff_pause_delay_override_for_title(title_id,
-                                                &override_delay_seconds)) {
-    return override_delay_seconds;
+      get_configured_pause_delay_seconds(title_id, image_backed,
+                                         &override_applied);
+  uint32_t autopause_delay_seconds = 0;
+  if (get_autopause_delay_for_source(source_path, image_backed,
+                                     &autopause_delay_seconds)) {
+    *autopause_delay_out = autopause_delay_seconds;
+    *autopause_delay_valid_out = true;
+    if (!override_applied)
+      return autopause_delay_seconds;
   }
 
   return delay_seconds;
@@ -322,7 +486,7 @@ static void restore_kstuff_if_needed(const char *reason) {
 }
 
 static void maybe_apply_kstuff_pause_for_slot(kstuff_game_entry_t *entry) {
-  if (!entry || !entry->active || entry->pause_applied)
+  if (!entry->active || entry->pause_applied)
     return;
 
   uint64_t now_us = monotonic_time_us();
@@ -536,17 +700,22 @@ void sm_kstuff_game_on_exec(pid_t pid, const char *title_id, uint32_t app_id,
   }
 
   bool image_backed = false;
-  uint32_t delay_seconds =
-      get_pause_delay_seconds_for_title(title_id, &image_backed);
+  bool autopause_delay_valid = false;
+  uint32_t autopause_delay_seconds = 0;
+  uint32_t delay_seconds = get_pause_delay_seconds_for_title(
+      title_id, &image_backed, &autopause_delay_seconds,
+      &autopause_delay_valid);
   uint64_t now_us = monotonic_time_us();
   uint64_t base_time_us = exec_time_us != 0 ? exec_time_us : now_us;
 
   g_kstuff.game.active = true;
   g_kstuff.game.image_backed = image_backed;
+  g_kstuff.game.autopause_delay_valid = autopause_delay_valid;
   g_kstuff.game.pause_applied = false;
   g_kstuff.game.focus_override_active = false;
   g_kstuff.game.pid = pid;
   g_kstuff.game.app_id = app_id;
+  g_kstuff.game.autopause_delay_seconds = autopause_delay_seconds;
   g_kstuff.game.launch_time_us = base_time_us;
   g_kstuff.game.pause_deadline_us =
       base_time_us == 0 ? 0 : base_time_us + (uint64_t)delay_seconds * 1000000ull;
