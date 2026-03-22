@@ -24,7 +24,7 @@ all: shadowmountplus.elf
 # Build Daemon
 shadowmountplus.elf: $(OBJS)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(OBJS) $(LIBS)
-	$(PS5_PAYLOAD_SDK)/bin/prospero-strip --strip-debug $@
+	$(PS5_PAYLOAD_SDK)/bin/prospero-strip --strip-all $@
 	rm -f src/notify_icon_asset.c
 
 src/notify_icon_asset.c: smp_icon.png
