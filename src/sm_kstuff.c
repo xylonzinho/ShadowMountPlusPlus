@@ -366,7 +366,15 @@ static void mark_restore_needed(void) {
 }
 
 static bool tracked_game_requires_restore(void) {
-  return g_kstuff.restore_on_empty || g_kstuff.game.focus_override_active;
+  return g_kstuff.restore_on_empty;
+}
+
+static void finish_tracked_game_clear(const char *reason) {
+  if (!g_kstuff.restore_on_empty)
+    return;
+
+  mark_restore_needed();
+  restore_kstuff_if_needed(reason);
 }
 
 static void apply_kstuff_config_reload(void) {
@@ -383,10 +391,8 @@ static void apply_kstuff_config_reload(void) {
     log_debug("  [KSTUFF] cleared tracked game by config reload: %s",
               g_kstuff.game.title_id);
     memset(&g_kstuff.game, 0, sizeof(g_kstuff.game));
-    if (restore_needed) {
-      mark_restore_needed();
-      restore_kstuff_if_needed("config reload");
-    }
+    if (restore_needed)
+      finish_tracked_game_clear("config reload");
     return;
   }
 
@@ -536,7 +542,13 @@ static void handle_kstuff_app_focus_change(uint32_t focused_app_id) {
     return;
 
   if (focused_app_id != g_kstuff.game.app_id) {
-    if (!g_kstuff.game.pause_applied || g_kstuff.game.focus_override_active)
+    if (!g_kstuff.game.pause_applied)
+      return;
+
+    if (!g_kstuff.restore_on_empty)
+      return;
+
+    if (g_kstuff.game.focus_override_active)
       return;
 
     bool enabled = sm_kstuff_is_enabled();
@@ -687,10 +699,8 @@ void sm_kstuff_game_on_exec(pid_t pid, const char *title_id, uint32_t app_id,
               (long)g_kstuff.game.pid, g_kstuff.game.title_id, (long)pid,
               title_id);
     memset(&g_kstuff.game, 0, sizeof(g_kstuff.game));
-    if (restore_needed) {
-      mark_restore_needed();
-      restore_kstuff_if_needed("tracked game handoff");
-    }
+    if (restore_needed)
+      finish_tracked_game_clear("tracked game handoff");
   }
 
   if (is_kstuff_pause_disabled_for_title(title_id)) {
@@ -739,10 +749,8 @@ void sm_kstuff_game_on_exit(pid_t pid) {
   log_debug("  [KSTUFF] game stopped: %s pid=%ld",
             g_kstuff.game.title_id, (long)pid);
   memset(&g_kstuff.game, 0, sizeof(g_kstuff.game));
-  if (restore_needed) {
-    mark_restore_needed();
-    restore_kstuff_if_needed("tracked game exit");
-  }
+  if (restore_needed)
+    finish_tracked_game_clear("tracked game exit");
 }
 
 void sm_kstuff_game_poll(void) {
@@ -763,10 +771,8 @@ void sm_kstuff_game_poll(void) {
 void sm_kstuff_game_shutdown(void) {
   bool restore_needed = tracked_game_requires_restore();
   memset(&g_kstuff.game, 0, sizeof(g_kstuff.game));
-  if (restore_needed) {
-    mark_restore_needed();
-    restore_kstuff_if_needed("watcher shutdown");
-  }
+  if (restore_needed)
+    finish_tracked_game_clear("watcher shutdown");
 }
 
 void sm_kstuff_on_config_reload(void) {
