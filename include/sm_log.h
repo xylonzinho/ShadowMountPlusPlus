@@ -9,6 +9,8 @@ typedef struct sm_error sm_error_t;
 void log_debug(const char *fmt, ...);
 // Prepare notification assets such as the packaged icon file.
 void sm_notifications_init(void);
+// Flush and close persistent log resources.
+void sm_log_shutdown(void);
 // Send a rich toast notification with packaged icon and version header.
 void notify_system_rich(bool allow_in_quiet_mode, const char *fmt, ...);
 // Send the "game installed" rich toast for the given title ID.

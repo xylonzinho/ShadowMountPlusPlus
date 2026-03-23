@@ -1,4 +1,6 @@
 #include "sm_platform.h"
+#include <pthread.h>
+
 #include "sm_log.h"
 #include "sm_config_mount.h"
 #include "sm_types.h"
@@ -6,6 +8,8 @@
 
 static sm_error_t g_last_error;
 static bool g_notifications_initialized = false;
+static pthread_mutex_t g_log_mutex = PTHREAD_MUTEX_INITIALIZER;
+static FILE *g_log_file = NULL;
 
 extern unsigned char smp_icon_png[];
 extern unsigned int smp_icon_png_len;
@@ -240,24 +244,38 @@ static void notify_system_plain_v(const char *fmt, va_list args) {
   notify_system_plain_message(message);
 }
 
-static void log_to_file(const char *fmt, va_list args) {
-  mkdir(LOG_DIR, 0777);
-  FILE *fp = fopen(LOG_FILE, "a");
-  if (fp) {
-    va_list args_file;
-    time_t rawtime;
-    struct tm *timeinfo;
-    char buffer[80];
-    time(&rawtime);
-    timeinfo = localtime(&rawtime);
-    strftime(buffer, sizeof(buffer), "%H:%M:%S", timeinfo);
-    va_copy(args_file, args);
-    fprintf(fp, "[%s] ", buffer);
-    vfprintf(fp, fmt, args_file);
-    fprintf(fp, "\n");
-    va_end(args_file);
-    fclose(fp);
-  }
+static FILE *ensure_log_file_open_locked(void) {
+  if (g_log_file)
+    return g_log_file;
+
+  (void)mkdir(LOG_DIR, 0777);
+  g_log_file = fopen(LOG_FILE, "a");
+  if (!g_log_file)
+    return NULL;
+
+  return g_log_file;
+}
+
+static void log_to_file_locked(const char *fmt, va_list args) {
+  FILE *fp = ensure_log_file_open_locked();
+  if (!fp)
+    return;
+
+  va_list args_file;
+  time_t rawtime;
+  struct tm tm_local;
+  char buffer[80];
+
+  time(&rawtime);
+  (void)localtime_r(&rawtime, &tm_local);
+  (void)strftime(buffer, sizeof(buffer), "%H:%M:%S", &tm_local);
+
+  va_copy(args_file, args);
+  fprintf(fp, "[%s] ", buffer);
+  vfprintf(fp, fmt, args_file);
+  fputc('\n', fp);
+  fflush(fp);
+  va_end(args_file);
 }
 
 void log_debug(const char *fmt, ...) {
@@ -268,11 +286,25 @@ void log_debug(const char *fmt, ...) {
   va_list args_copy;
   va_start(args, fmt);
   va_copy(args_copy, args);
-  vprintf(fmt, args);
-  printf("\n");
-  log_to_file(fmt, args_copy);
+
+  pthread_mutex_lock(&g_log_mutex);
+  vfprintf(stdout, fmt, args);
+  fputc('\n', stdout);
+  fflush(stdout);
+  log_to_file_locked(fmt, args_copy);
+  pthread_mutex_unlock(&g_log_mutex);
+
   va_end(args_copy);
   va_end(args);
+}
+
+void sm_log_shutdown(void) {
+  pthread_mutex_lock(&g_log_mutex);
+  if (g_log_file) {
+    fclose(g_log_file);
+    g_log_file = NULL;
+  }
+  pthread_mutex_unlock(&g_log_mutex);
 }
 
 void notify_system_rich(bool allow_in_quiet_mode, const char *fmt, ...) {

@@ -399,6 +399,7 @@ shutdown:
               shutdown_reason ? shutdown_reason : "unknown shutdown source");
   }
 
+  sm_log_shutdown();
   sceUserServiceTerminate();
   return 0;
 }
