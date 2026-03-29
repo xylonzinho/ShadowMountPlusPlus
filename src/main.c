@@ -253,6 +253,81 @@ static void log_non_empty_scan_paths(void) {
   }
 }
 
+#define MAX_MOUNTED_FS_TYPES 64
+
+static void log_mounted_filesystem_types(void) {
+  int mount_count = getfsstat(NULL, 0, MNT_NOWAIT);
+  if (mount_count <= 0) {
+    log_debug("  [FS] getfsstat returned %d", mount_count);
+    notify_system_info("Mounted FS types: unavailable");
+    return;
+  }
+
+  struct statfs *mounts =
+      calloc((size_t)mount_count, sizeof(struct statfs));
+  if (!mounts) {
+    log_debug("  [FS] failed to allocate statfs table (%d entries)",
+              mount_count);
+    notify_system_info("Mounted FS types: memory allocation failed");
+    return;
+  }
+
+  int got = getfsstat(mounts, (long)(sizeof(struct statfs) * (size_t)mount_count),
+                      MNT_NOWAIT);
+  if (got <= 0) {
+    log_debug("  [FS] getfsstat read failed: %s", strerror(errno));
+    free(mounts);
+    notify_system_info("Mounted FS types: probe failed");
+    return;
+  }
+
+  char unique_types[MAX_MOUNTED_FS_TYPES][MFSNAMELEN];
+  int unique_count = 0;
+  memset(unique_types, 0, sizeof(unique_types));
+
+  for (int i = 0; i < got; i++) {
+    const char *fs_type = mounts[i].f_fstypename[0] != '\0'
+                              ? mounts[i].f_fstypename
+                              : "unknown";
+    const char *from = mounts[i].f_mntfromname[0] != '\0'
+                           ? mounts[i].f_mntfromname
+                           : "(none)";
+    const char *on = mounts[i].f_mntonname[0] != '\0'
+                         ? mounts[i].f_mntonname
+                         : "(none)";
+
+    log_debug("  [FS] mounted: type=%s from=%s on=%s", fs_type, from, on);
+
+    bool seen = false;
+    for (int j = 0; j < unique_count; j++) {
+      if (strcmp(unique_types[j], fs_type) == 0) {
+        seen = true;
+        break;
+      }
+    }
+
+    if (!seen && unique_count < MAX_MOUNTED_FS_TYPES) {
+      (void)strlcpy(unique_types[unique_count], fs_type,
+                    sizeof(unique_types[unique_count]));
+      unique_count++;
+    }
+  }
+
+  char summary[1024];
+  summary[0] = '\0';
+  for (int i = 0; i < unique_count; i++) {
+    if (i > 0)
+      (void)strlcat(summary, ", ", sizeof(summary));
+    (void)strlcat(summary, unique_types[i], sizeof(summary));
+  }
+  if (summary[0] == '\0')
+    (void)strlcpy(summary, "none", sizeof(summary));
+
+  log_debug("  [FS] mounted filesystem types (%d): %s", unique_count, summary);
+  notify_system_info("Mounted FS types: %s", summary);
+  free(mounts);
+}
+
 static void ensure_kstuff_noautomount_file(void) {
   if (path_exists(KSTUFF_NOAUTOMOUNT_FILE))
     return;
@@ -358,6 +433,7 @@ int main(void) {
   if (remount_system_ex() != 0) {
     log_debug("  [MOUNT] remount_system_ex failed: %s", strerror(errno));
   }
+  log_mounted_filesystem_types();
 
   notify_system("ShadowMount+ v%s exFAT/UFS/PFS", SHADOWMOUNT_VERSION);
   log_non_empty_scan_paths();

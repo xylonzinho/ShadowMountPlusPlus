@@ -8,3 +8,5 @@ refs/*
 docs/*
 .DS_Store
 /zfs_implementation*
+/related_projects/
+zfs_kernel_support.md
