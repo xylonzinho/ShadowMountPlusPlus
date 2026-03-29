@@ -62,6 +62,11 @@ backport_fakelib=1
 # 0/false/no/off -> leave kstuff state untouched
 kstuff_game_auto_toggle=1
 
+# Detect likely early crashes after auto-pause and autotune pause delay:
+# 1/true/yes/on  -> enable crash heuristic and autotune updates (default)
+# 0/false/no/off -> disable crash detection/autotune logic
+kstuff_crash_detection=1
+
 # Delay before pausing kstuff for image-backed titles.
 kstuff_pause_delay_image_seconds=20
 

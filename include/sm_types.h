@@ -108,6 +108,7 @@ typedef struct runtime_config {
   bool force_mount;
   bool backport_fakelib_enabled;
   bool kstuff_game_auto_toggle;
+  bool kstuff_crash_detection_enabled;
   bool legacy_recursive_scan_forced;
   uint32_t scan_depth;
   uint32_t scan_interval_us;

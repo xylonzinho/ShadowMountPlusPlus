@@ -53,6 +53,7 @@ Supported keys (all optional):
 - `ufs_backend=lvd|md` (default: `lvd`)
 - `backport_fakelib=1|0` (`1` mounts sandbox `fakelib` overlays for running games; default: `1`)
 - `kstuff_game_auto_toggle=1|0` (`1` pauses kstuff after tracked game launches and resumes it on stop; default: `1`)
+- `kstuff_crash_detection=1|0` (`1` enables the early post-auto-pause crash heuristic and autotune updates; default: `1`)
 - `kstuff_pause_delay_image_seconds=<0..3600>` (delay before pausing kstuff for image-backed launches; default: `20`)
 - `kstuff_pause_delay_direct_seconds=<0..3600>` (delay before pausing kstuff for direct/non-image launches; default: `10`)
 - `kstuff_no_pause=<TITLE_ID>` (repeatable; keeps kstuff enabled for matching titles)
@@ -102,6 +103,7 @@ Backport overlay behavior:
 Kstuff game lifecycle behavior:
 - When `kstuff_game_auto_toggle=1`, ShadowMount watches game `exec/exit` events in the background.
 - Image-backed launches use `kstuff_pause_delay_image_seconds`; direct/non-image launches use `kstuff_pause_delay_direct_seconds`.
+- `kstuff_crash_detection=0` disables the crash heuristic and the automatic pause-delay tuning logic, while leaving normal kstuff auto-pause/auto-resume behavior intact.
 - `kstuff_no_pause` skips auto-pause entirely for matching title IDs.
 - `kstuff_delay` overrides the pause delay for matching title IDs, regardless of image/direct launch type.
 - `/data/shadowmount/autotune.ini` overrides both `config.ini` and `autopause.txt` for matching title IDs.

@@ -213,6 +213,7 @@ static void init_runtime_config_defaults(runtime_config_state_t *state) {
   state->cfg.force_mount = false;
   state->cfg.backport_fakelib_enabled = true;
   state->cfg.kstuff_game_auto_toggle = true;
+  state->cfg.kstuff_crash_detection_enabled = true;
   state->cfg.legacy_recursive_scan_forced = false;
   state->cfg.scan_depth = DEFAULT_SCAN_DEPTH;
   state->cfg.scan_interval_us = DEFAULT_SCAN_INTERVAL_US;
@@ -267,6 +268,8 @@ static void apply_reloadable_runtime_fields(runtime_config_state_t *dst,
   dst->cfg.force_mount = src->cfg.force_mount;
   dst->cfg.backport_fakelib_enabled = src->cfg.backport_fakelib_enabled;
   dst->cfg.kstuff_game_auto_toggle = src->cfg.kstuff_game_auto_toggle;
+  dst->cfg.kstuff_crash_detection_enabled =
+      src->cfg.kstuff_crash_detection_enabled;
   dst->cfg.scan_interval_us = src->cfg.scan_interval_us;
   dst->cfg.stability_wait_seconds = src->cfg.stability_wait_seconds;
   dst->cfg.kstuff_pause_delay_image_seconds =
@@ -865,6 +868,15 @@ static config_load_status_t load_runtime_config_state(runtime_config_state_t *st
       continue;
     }
 
+    if (strcasecmp(key, "kstuff_crash_detection") == 0) {
+      if (!parse_bool_ini(value, &bval)) {
+        log_debug("  [CFG] invalid bool at line %d: %s=%s", line_no, key, value);
+        continue;
+      }
+      state->cfg.kstuff_crash_detection_enabled = bval;
+      continue;
+    }
+
     if (strcasecmp(key, "kstuff_no_pause") == 0) {
       if (!add_kstuff_no_pause_title_rule(state, value)) {
         log_debug("  [CFG] invalid kstuff no-pause title rule at line %d: "
@@ -1023,7 +1035,7 @@ static config_load_status_t load_runtime_config_state(runtime_config_state_t *st
 
   log_debug("  [CFG] loaded: debug=%d quiet=%d ro=%d force=%d scan_depth=%u "
             "legacy_recursive_scan_forced=%d backport_fakelib=%d "
-            "kstuff_game_auto_toggle=%d "
+            "kstuff_game_auto_toggle=%d kstuff_crash_detection=%d "
             "kstuff_pause_delay_image_s=%u kstuff_pause_delay_direct_s=%u "
             "exfat_backend=%s ufs_backend=%s "
             "lvd_sec(exfat=%u ufs=%u pfs=%u) md_sec(exfat=%u ufs=%u) "
@@ -1035,6 +1047,7 @@ static config_load_status_t load_runtime_config_state(runtime_config_state_t *st
             state->cfg.legacy_recursive_scan_forced ? 1 : 0,
             state->cfg.backport_fakelib_enabled ? 1 : 0,
             state->cfg.kstuff_game_auto_toggle ? 1 : 0,
+            state->cfg.kstuff_crash_detection_enabled ? 1 : 0,
             state->cfg.kstuff_pause_delay_image_seconds,
             state->cfg.kstuff_pause_delay_direct_seconds,
             attach_backend_name(state->cfg.exfat_backend),
