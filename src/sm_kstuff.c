@@ -15,7 +15,8 @@
 #define KSTUFF_SYSENTVEC_ENABLED 0xdeb7u
 #define KSTUFF_SYSENTVEC_DISABLED 0xffffu
 #define KSTUFF_CRASH_HEURISTIC_MAX_RUNTIME_US (120ull * 1000000ull)
-#define KSTUFF_CRASH_HEURISTIC_APPFOCUS_TO_LNC_WINDOW_US (2ull * 1000000ull)
+#define KSTUFF_CRASH_HEURISTIC_MAX_POST_AUTOPAUSE_RUNTIME_US (10ull * 1000000ull)
+#define KSTUFF_CRASH_HEURISTIC_APPFOCUS_TO_LNC_WINDOW_US (5ull * 1000000ull)
 typedef struct {
   bool active;
   bool image_backed;
@@ -49,6 +50,10 @@ static _Atomic bool g_pending_app_focus_valid;
 static _Atomic bool g_pending_config_reload;
 static _Atomic uint64_t g_last_relevant_app_focus_time_us;
 static _Atomic bool g_crash_sequence_seen_since_launch;
+
+static bool kstuff_crash_detection_enabled(void) {
+  return runtime_config()->kstuff_crash_detection_enabled;
+}
 
 static bool should_log_kstuff_crash_heuristic(const kstuff_game_entry_t *entry,
                                               uint64_t exit_time_us,
@@ -410,6 +415,9 @@ static void finish_tracked_game_clear(const char *reason) {
 }
 
 static void apply_kstuff_config_reload(void) {
+  atomic_store(&g_last_relevant_app_focus_time_us, 0);
+  atomic_store(&g_crash_sequence_seen_since_launch, false);
+
   if (!runtime_config()->kstuff_game_auto_toggle) {
     sm_kstuff_game_shutdown();
     return;
@@ -780,13 +788,17 @@ void sm_kstuff_game_on_exec(pid_t pid, const char *title_id, uint32_t app_id,
 }
 
 void sm_kstuff_note_app_focus(uint32_t app_id) {
-  if (g_kstuff.game.active && !is_ignored_focus_app_id(app_id))
+  if (kstuff_crash_detection_enabled() && g_kstuff.game.active &&
+      !is_ignored_focus_app_id(app_id)) {
     atomic_store(&g_last_relevant_app_focus_time_us, monotonic_time_us());
+  }
   atomic_store(&g_pending_app_focus_id, app_id);
   atomic_store(&g_pending_app_focus_valid, true);
 }
 
 void sm_kstuff_note_lnc_system_status(uint64_t pattern) {
+  if (!kstuff_crash_detection_enabled())
+    return;
   if (pattern != 0x0000000000000002ULL) // SHELLUI_FG_GAME_BG_CPU_MODE
     return;
   if (!g_kstuff.game.active)
@@ -906,6 +918,8 @@ static bool should_log_kstuff_crash_heuristic(const kstuff_game_entry_t *entry,
                                               uint64_t *elapsed_us_out) {
   if (elapsed_us_out)
     *elapsed_us_out = 0;
+  if (!kstuff_crash_detection_enabled())
+    return false;
   if (!entry || !entry->active || entry->launch_time_us == 0 || exit_time_us == 0)
     return false;
   if (exit_time_us <= entry->launch_time_us)
@@ -916,6 +930,10 @@ static bool should_log_kstuff_crash_heuristic(const kstuff_game_entry_t *entry,
     return false;
   if (entry->auto_pause_time_us == 0 || entry->auto_pause_time_us < entry->launch_time_us ||
       entry->auto_pause_time_us > exit_time_us) {
+    return false;
+  }
+  if (exit_time_us - entry->auto_pause_time_us >
+      KSTUFF_CRASH_HEURISTIC_MAX_POST_AUTOPAUSE_RUNTIME_US) {
     return false;
   }
   if (!atomic_load(&g_crash_sequence_seen_since_launch)) {

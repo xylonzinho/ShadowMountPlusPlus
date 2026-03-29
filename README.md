@@ -47,6 +47,7 @@ Supported keys (all optional):
 - `force_mount=1|0` (mounting even damaged file systems; default: `0`)
 - `image_ro=<image_filename>` (repeatable; force read-only mode for this image filename)
 - `image_rw=<image_filename>` (repeatable; force read-write mode for this image filename)
+- `image_sector=<image_filename>:<sector_size>` (repeatable; force sector size for this image filename)
 - `scan_depth=<1..2>` (`1` = scan only first-level subfolders, `2` = also scan one additional nested level; default: `1`)
 - `recursive_scan=1|0` (deprecated compatibility key; `1` forces `scan_depth=2`)
 - `scan_interval_seconds=<1..3600>` (full scan loop interval; default: `10`)
@@ -56,6 +57,7 @@ Supported keys (all optional):
 - `zfs_backend=lvd|md` (default: `lvd`)
 - `backport_fakelib=1|0` (`1` mounts sandbox `fakelib` overlays for running games; default: `1`)
 - `kstuff_game_auto_toggle=1|0` (`1` pauses kstuff after tracked game launches and resumes it on stop; default: `1`)
+- `kstuff_crash_detection=1|0` (`1` enables the early post-auto-pause crash heuristic and autotune updates; default: `1`)
 - `kstuff_pause_delay_image_seconds=<0..3600>` (delay before pausing kstuff for image-backed launches; default: `20`)
 - `kstuff_pause_delay_direct_seconds=<0..3600>` (delay before pausing kstuff for direct/non-image launches; default: `10`)
 - `kstuff_no_pause=<TITLE_ID>` (repeatable; keeps kstuff enabled for matching titles)
@@ -63,6 +65,7 @@ Supported keys (all optional):
 - `/data/shadowmount/autotune.ini` may also provide per-title pause-delay overrides with highest priority:
   - `kstuff_delay=<TITLE_ID>:<0..3600>`
   - `<TITLE_ID>=<0..3600>`
+  - `image_sector=<image_filename>:<sector_size>`
 - `scanpath=<absolute_path>` (can be repeated on multiple lines; default: built-in scan path list below)
 - `lvd_exfat_sector_size=<value>` (default: `512`)
 - `lvd_ufs_sector_size=<value>` (default: `4096`)
@@ -83,7 +86,14 @@ mount_read_only=1
 image_rw=PPSA1234-my-image.ffpfs
 image_rw=MYGame 123.exfat
 image_ro=legacy_dump.ffpkg
+image_sector=MYGame 123.exfat:65536
 ```
+
+Per-image sector override behavior:
+- Match is done by image file name (without path).
+- `image_sector` in `/data/shadowmount/autotune.ini` has the highest priority for matching image files.
+- If no per-image rule matches, the backend-specific global sector size defaults are used.
+- When image validation fails because the mounted file-system cluster size is smaller than the selected device sector size, ShadowMountPlus writes `image_sector=<image_filename>:<cluster_size>` into `/data/shadowmount/autotune.ini` and asks you to try mounting again.
 
 Scan path behavior:
 - If at least one `scanpath=...` is present, only those custom paths are used.
@@ -107,9 +117,11 @@ Backport overlay behavior:
 Kstuff game lifecycle behavior:
 - When `kstuff_game_auto_toggle=1`, ShadowMount watches game `exec/exit` events in the background.
 - Image-backed launches use `kstuff_pause_delay_image_seconds`; direct/non-image launches use `kstuff_pause_delay_direct_seconds`.
+- `kstuff_crash_detection=0` disables the crash heuristic and the automatic pause-delay tuning logic, while leaving normal kstuff auto-pause/auto-resume behavior intact.
 - `kstuff_no_pause` skips auto-pause entirely for matching title IDs.
 - `kstuff_delay` overrides the pause delay for matching title IDs, regardless of image/direct launch type.
 - `/data/shadowmount/autotune.ini` overrides both `config.ini` and `autopause.txt` for matching title IDs.
+- `/data/shadowmount/autotune.ini` also overrides `image_sector` rules from `config.ini` for matching image file names.
 - A game source folder may optionally contain `autopause.txt`; it is read once at launch time.
 - Priority order is: `autotune.ini` -> `kstuff_delay` from `config.ini` -> `autopause.txt` -> global direct/image default delay.
 - If `autopause.txt` contains only a number, that value is used for direct launches and doubled for image-backed launches.

@@ -27,8 +27,10 @@ force_mount=0
 # Per-image mount mode override by file name (can be repeated many times):
 # image_ro=<image_filename>
 # image_rw=<image_filename>
+# image_sector=<image_filename>:<sector_size>
 # image_ro=PPSA12345.ffpfs
 # image_rw=My Game Dump.exfat
+# image_sector=My Game Dump.exfat:65536
 
 # Scan depth relative to each scan root:
 # 1 -> scan only first-level subdirectories (default)
@@ -62,6 +64,11 @@ backport_fakelib=1
 # 1/true/yes/on  -> pause kstuff after game launch, resume immediately on stop
 # 0/false/no/off -> leave kstuff state untouched
 kstuff_game_auto_toggle=1
+
+# Detect likely early crashes after auto-pause and autotune pause delay:
+# 1/true/yes/on  -> enable crash heuristic and autotune updates (default)
+# 0/false/no/off -> disable crash detection/autotune logic
+kstuff_crash_detection=1
 
 # Delay before pausing kstuff for image-backed titles.
 kstuff_pause_delay_image_seconds=20
