@@ -7,6 +7,8 @@
 #define EXFAT_ATTACH_USE_MDCTL 0
 // 1 = allow mounting .ffpkg images via /dev/mdctl, 0 = keep UFS on LVD.
 #define UFS_ATTACH_USE_MDCTL 0
+// 1 = allow mounting .ffzfs images via /dev/mdctl, 0 = keep ZFS on LVD.
+#define ZFS_ATTACH_USE_MDCTL 0
 
 // --- LVD Definitions ---
 // Kernel exposes base attach (V0), extended attach (V1/Attach2) and detach.
@@ -35,16 +37,19 @@
 #
 #define LVD_SECTOR_SIZE_EXFAT 512u
 #define LVD_SECTOR_SIZE_UFS 4096u
+#define LVD_SECTOR_SIZE_ZFS 4096u
 #define LVD_SECTOR_SIZE_PFS 4096u
 #define LVD_SECONDARY_UNIT_SINGLE_IMAGE 0x10000u
 #define MD_SECTOR_SIZE_EXFAT 512u
 #define MD_SECTOR_SIZE_UFS 512u
+#define MD_SECTOR_SIZE_ZFS 512u
 // Raw option bits are normalized by sceFsLvdAttachCommon before validation:
 // raw:0x1->norm:0x08, raw:0x2->norm:0x80, raw:0x4->norm:0x02, raw:0x8->norm:0x10.
 // The normalized masks are then checked against validator constraints (0x82/0x92).
 #define LVD_ATTACH_IMAGE_TYPE_SINGLE 0
 #define LVD_ATTACH_IMAGE_TYPE_UFS_DOWNLOAD_DATA 7
 #define LVD_ATTACH_IMAGE_TYPE_PFS_SAVE_DATA 5
+#define LVD_ATTACH_IMAGE_TYPE_ZFS LVD_ATTACH_IMAGE_TYPE_SINGLE
 #define LVD_ATTACH_LAYER_COUNT 1
 #define LVD_ATTACH_LAYER_ARRAY_SIZE 3
 #define LVD_ENTRY_TYPE_FILE 1

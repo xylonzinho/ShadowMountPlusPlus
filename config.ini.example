@@ -51,6 +51,7 @@ stability_wait_seconds=10
 # md    -> /dev/mdctl  -> /dev/mdN
 exfat_backend=lvd
 ufs_backend=lvd
+zfs_backend=lvd
 
 # Sandbox fakelib backport watcher:
 # 1/true/yes/on  -> mount /mnt/sandbox/<TITLE_ID>_XXX/app0/fakelib into common/lib
@@ -78,9 +79,11 @@ kstuff_pause_delay_direct_seconds=10
 # Backend-specific sector size overrides:
 lvd_exfat_sector_size=512
 lvd_ufs_sector_size=4096
+lvd_zfs_sector_size=4096
 lvd_pfs_sector_size=32768
 md_exfat_sector_size=512
 md_ufs_sector_size=512
+md_zfs_sector_size=512
 
 # Optional custom scan roots (can be repeated):
 # If at least one scanpath=... is present, only these paths are used.

@@ -19,6 +19,8 @@ static uint32_t get_lvd_sector_size_fallback(image_fs_type_t fs_type) {
   switch (fs_type) {
   case IMAGE_FS_UFS:
     return cfg->lvd_sector_ufs;
+  case IMAGE_FS_ZFS:
+    return cfg->lvd_sector_zfs;
   case IMAGE_FS_PFS:
     return cfg->lvd_sector_pfs;
   case IMAGE_FS_EXFAT:
@@ -54,6 +56,8 @@ static uint32_t get_md_sector_size(image_fs_type_t fs_type) {
   switch (fs_type) {
   case IMAGE_FS_UFS:
     return cfg->md_sector_ufs;
+  case IMAGE_FS_ZFS:
+    return cfg->md_sector_zfs;
   case IMAGE_FS_EXFAT:
   default:
     return cfg->md_sector_exfat;
@@ -106,6 +110,8 @@ static uint16_t get_lvd_image_type(image_fs_type_t fs_type) {
     return LVD_ATTACH_IMAGE_TYPE_UFS_DOWNLOAD_DATA;
   if (fs_type == IMAGE_FS_PFS)
     return LVD_ATTACH_IMAGE_TYPE_PFS_SAVE_DATA;
+  if (fs_type == IMAGE_FS_ZFS)
+    return LVD_ATTACH_IMAGE_TYPE_ZFS;
   return LVD_ATTACH_IMAGE_TYPE_SINGLE;
 }
 
@@ -132,6 +138,8 @@ static image_fs_type_t detect_image_fs_type(const char *name) {
     return IMAGE_FS_EXFAT;
   if (strcasecmp(dot, ".ffpfs") == 0)
     return IMAGE_FS_PFS;
+  if (strcasecmp(dot, ".ffzfs") == 0)
+    return IMAGE_FS_ZFS;
   return IMAGE_FS_UNKNOWN;
 }
 
@@ -147,6 +155,8 @@ static const char *image_fs_name(image_fs_type_t fs_type) {
     return "exfatfs";
   case IMAGE_FS_PFS:
     return "pfs";
+  case IMAGE_FS_ZFS:
+    return "zfs";
   default:
     return "unknown";
   }
@@ -531,6 +541,8 @@ static attach_backend_t select_image_backend(const runtime_config_t *cfg,
     return cfg->exfat_backend;
   if (fs_type == IMAGE_FS_UFS)
     return cfg->ufs_backend;
+  if (fs_type == IMAGE_FS_ZFS)
+    return cfg->zfs_backend;
   return ATTACH_BACKEND_LVD;
 }
 
@@ -609,6 +621,17 @@ static bool perform_image_nmount(const char *file_path, image_fs_type_t fs_type,
       IOVEC_ENTRY("errmsg"),     {(void *)mount_errmsg, sizeof(mount_errmsg)},
       IOVEC_ENTRY("force"),      IOVEC_ENTRY(NULL)};
 
+  struct iovec iov_zfs[] = {
+      IOVEC_ENTRY("from"),       IOVEC_ENTRY(devname),
+      IOVEC_ENTRY("fspath"),     IOVEC_ENTRY(mount_point),
+      IOVEC_ENTRY("fstype"),     IOVEC_ENTRY("zfs"),
+      IOVEC_ENTRY("budgetid"),   IOVEC_ENTRY(DEVPFS_BUDGET_GAME),
+      IOVEC_ENTRY("async"),      IOVEC_ENTRY(NULL),
+      IOVEC_ENTRY("noatime"),    IOVEC_ENTRY(NULL),
+      IOVEC_ENTRY("automounted"), IOVEC_ENTRY(NULL),
+      IOVEC_ENTRY("errmsg"),     {(void *)mount_errmsg, sizeof(mount_errmsg)},
+      IOVEC_ENTRY("force"),      IOVEC_ENTRY(NULL)};
+
   if (fs_type == IMAGE_FS_UFS) {
     iov = iov_ufs;
     iovlen = (unsigned int)IOVEC_SIZE(iov_ufs) - (force_mount ? 0u : 2u);
@@ -622,6 +645,9 @@ static bool perform_image_nmount(const char *file_path, image_fs_type_t fs_type,
               PFS_MOUNT_BUDGET_ID, PFS_MOUNT_MKEYMODE, sigverify, playgo, disc);
     iov = iov_pfs;
     iovlen = (unsigned int)IOVEC_SIZE(iov_pfs) - (force_mount ? 0u : 2u);
+  } else if (fs_type == IMAGE_FS_ZFS) {
+    iov = iov_zfs;
+    iovlen = (unsigned int)IOVEC_SIZE(iov_zfs) - (force_mount ? 0u : 2u);
   } else {
     log_debug("  [IMG][%s] unsupported fstype=%s",
               attach_backend_name(attach_backend), image_fs_name(fs_type));

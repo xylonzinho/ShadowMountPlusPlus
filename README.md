@@ -13,19 +13,21 @@
 
 ## Current image support
 
-`PFS support is experimental.`
+`PFS and ZFS support are experimental.`
 
 | Extension | Mounted FS | Attach backend | Status |
 | --- | --- | --- | --- |
 | `.ffpkg` | `ufs` | `LVD` or `MD` (configurable) | Recommended |
 | `.exfat` | `exfatfs` | `LVD` or `MD` (configurable) | Compatibility / external-drive-only titles |
 | `.ffpfs` | `pfs` | `LVD` | Experimental |
+| `.ffzfs` | `zfs` | `LVD` or `MD` (configurable) | Experimental - File compression support |
 
 Notes:
 - Backend, read-only mode, and sector size can be configured via `/data/shadowmount/config.ini`.
 - Debug logging is enabled by default (`debug=1`) and writes to console plus `/data/shadowmount/debug.log` (set `debug=0` to disable).
 - **UFS (`.ffpkg`) is the recommended image format for normal use.**
 - **Use exFAT (`.exfat`) only for titles that need external-drive-style compatibility.**
+- **ZFS (`.ffzfs`) is experimental; use only if you wanto so benefit from the file compression from ZFS.**
 - **When building exFAT images manually, keep the cluster size at `64 KB`; smaller clusters can reduce performance.**
 
 ## Recommended FS choice
@@ -51,6 +53,7 @@ Supported keys (all optional):
 - `stability_wait_seconds=<0..3600>` (minimum source age before processing; default: `10`)
 - `exfat_backend=lvd|md` (default: `lvd`)
 - `ufs_backend=lvd|md` (default: `lvd`)
+- `zfs_backend=lvd|md` (default: `lvd`)
 - `backport_fakelib=1|0` (`1` mounts sandbox `fakelib` overlays for running games; default: `1`)
 - `kstuff_game_auto_toggle=1|0` (`1` pauses kstuff after tracked game launches and resumes it on stop; default: `1`)
 - `kstuff_pause_delay_image_seconds=<0..3600>` (delay before pausing kstuff for image-backed launches; default: `20`)
@@ -63,9 +66,11 @@ Supported keys (all optional):
 - `scanpath=<absolute_path>` (can be repeated on multiple lines; default: built-in scan path list below)
 - `lvd_exfat_sector_size=<value>` (default: `512`)
 - `lvd_ufs_sector_size=<value>` (default: `4096`)
+- `lvd_zfs_sector_size=<value>` (default: `4096`)
 - `lvd_pfs_sector_size=<value>` (default: `32768`)
 - `md_exfat_sector_size=<value>` (default: `512`)
 - `md_ufs_sector_size=<value>` (default: `512`)
+- `md_zfs_sector_size=<value>` (default: `512`)
 
 Per-image mode override behavior:
 - Match is done by image file name (without path).
@@ -125,7 +130,7 @@ Image mountpoints are created under:
 
 `/mnt/shadowmnt/<image_name>_<hash>`
 
-Image layout requirement (`.ffpkg`, `.exfat`, `.ffpfs`):
+Image layout requirement (`.ffpkg`, `.exfat`, `.ffpfs`, `.ffzfs`):
 - Game files must be placed at the image root.
 - Do not add an extra top-level folder inside the image.
 - Valid example: `/sce_sys/param.json` exists directly from image root.
@@ -225,6 +230,37 @@ Windows:
   - `UFS2Tool.exe newfs -O 2 -b 65536 -f 65536 -m 0 -S 4096 -i 262144 -D ./APPXXXX ./PPSA12345.ffpkg`
   - For manual builds, use `-i 262144` as the baseline and lower it for images with many small files.
 
+## Creating a ZFS image (`.ffzfs`)
+
+ZFS support is experimental and intended for advanced users who need ZFS tooling/compression.
+
+Linux:
+- Script: `makezfs.sh`
+- Usage: `sudo ./makezfs.sh <game_root_dir> [output_file]`
+- Example:
+  - `chmod +x makezfs.sh`
+  - `sudo ./makezfs.sh ./APPXXXX ./PPSA12345.ffzfs`
+- Requirements:
+  - `zpool`, `zfs`, `losetup`, `truncate`, `rsync`
+- Notes:
+  - Source folder must be the game root and contain `eboot.bin`.
+  - Recommended/default compression is `lz4` for speed and compatibility.
+  - You can override compression via env var, for example:
+    - `sudo ZFS_COMPRESSION=zstd ./makezfs.sh ./APPXXXX ./PPSA12345.ffzfs`
+
+macOS:
+- Script: `makezfs.sh`
+- Usage: `sudo ./makezfs.sh <game_root_dir> [output_file]`
+- Requirements:
+  - OpenZFS tools installed and available in PATH (`zpool`, `zfs`)
+  - `hdiutil`, `mkfile`, `rsync`
+- Notes:
+  - The script uses `hdiutil` raw attachment for image-backed pool creation.
+
+Windows:
+- Recommended path is WSL with OpenZFS tooling and then run `makezfs.sh` from WSL.
+- Native Windows ZFS/image workflow is not bundled yet.
+
 
 ## Installation and usage
 
@@ -262,9 +298,9 @@ If a game is not mounted:
 - If logs show `source not stable yet`, adjust `stability_wait_seconds` (or wait for source copy/write to finish).
 - Verify game structure:
   - folder game: `<GAME_DIR>/sce_sys/param.json`;
-  - image game (`.ffpkg` / `.exfat` / `.ffpfs`): `sce_sys/param.json` must be at image root (no extra top-level folder).
+  - image game (`.ffpkg` / `.exfat` / `.ffpfs` / `.ffzfs`): `sce_sys/param.json` must be at image root (no extra top-level folder).
 - If you see `missing/invalid param.json` for an image, check via FTP that files are present under `/mnt/shadowmnt/<image_name>_<hash>/` and include `sce_sys/param.json`.
-- If you see image mount failure, check image integrity and filesystem type (`.ffpkg`=UFS, `.exfat`=exFAT, `.ffpfs`=PFS).
+- If you see image mount failure, check image integrity and filesystem type (`.ffpkg`=UFS, `.exfat`=exFAT, `.ffpfs`=PFS, `.ffzfs`=ZFS).
 - If you see duplicate titleId notification, keep only one source per `<TITLE_ID>`.
 
 If a game is mounted but does not start:

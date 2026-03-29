@@ -1,5 +1,9 @@
 PS5_PAYLOAD_SDK ?= /opt/ps5-payload-sdk
+
+# Allow utility-only targets to run without the PS5 SDK toolchain present.
+ifeq ($(filter clean makezfs,$(MAKECMDGOALS)),)
 include $(PS5_PAYLOAD_SDK)/toolchain/prospero.mk
+endif
 
 VERSION_TAG := $(shell git describe --abbrev=6 --dirty --always --tags 2>/dev/null || echo unknown)
 
@@ -20,6 +24,15 @@ HEADERS := $(wildcard include/*.h)
 
 # Targets
 all: shadowmountplus.elf
+
+.PHONY: makezfs
+makezfs:
+	@if [ -z "$(SOURCE)" ]; then \
+		echo "Usage: make makezfs SOURCE=<game_root_dir> [OUTPUT=<image.ffzfs>] [ZFS_COMPRESSION=lz4]"; \
+		exit 1; \
+	fi
+	ZFS_COMPRESSION="$(if $(ZFS_COMPRESSION),$(ZFS_COMPRESSION),lz4)" \
+	./makezfs.sh "$(SOURCE)" "$(if $(OUTPUT),$(OUTPUT),download0.ffzfs)"
 
 # Build Daemon
 shadowmountplus.elf: $(OBJS)
