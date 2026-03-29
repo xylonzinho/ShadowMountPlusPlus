@@ -54,6 +54,7 @@ static bool should_log_kstuff_crash_heuristic(const kstuff_game_entry_t *entry,
                                               uint64_t exit_time_us,
                                               uint64_t *elapsed_us_out);
 static bool is_ignored_focus_app_id(uint32_t app_id);
+static uint32_t get_effective_pause_delay_seconds(const kstuff_game_entry_t *entry);
 
 static bool refresh_kstuff_support_state(void);
 static uint32_t get_pause_delay_seconds_for_title(const char *title_id,
@@ -430,14 +431,15 @@ static void apply_kstuff_config_reload(void) {
   if (g_kstuff.game.pause_applied)
     return;
 
-  bool override_applied = false;
-  uint32_t delay_seconds =
-      get_configured_pause_delay_seconds(g_kstuff.game.title_id,
-                                         g_kstuff.game.image_backed,
-                                         &override_applied);
-  if (!override_applied && g_kstuff.game.autopause_delay_valid) {
-    delay_seconds = g_kstuff.game.autopause_delay_seconds;
-  }
+  bool image_backed = g_kstuff.game.image_backed;
+  bool autopause_delay_valid = false;
+  uint32_t autopause_delay_seconds = 0;
+  uint32_t delay_seconds = get_pause_delay_seconds_for_title(
+      g_kstuff.game.title_id, &image_backed, &autopause_delay_seconds,
+      &autopause_delay_valid);
+  g_kstuff.game.image_backed = image_backed;
+  g_kstuff.game.autopause_delay_valid = autopause_delay_valid;
+  g_kstuff.game.autopause_delay_seconds = autopause_delay_seconds;
   g_kstuff.game.pause_deadline_us =
       g_kstuff.game.launch_time_us == 0
           ? 0
@@ -459,6 +461,12 @@ static uint32_t get_pause_delay_seconds_for_title(const char *title_id,
   *image_backed_out = image_backed;
   *autopause_delay_out = 0;
   *autopause_delay_valid_out = false;
+
+  uint32_t autotuned_delay_seconds = 0;
+  if (get_kstuff_autotune_pause_delay_for_title(title_id,
+                                                &autotuned_delay_seconds)) {
+    return autotuned_delay_seconds;
+  }
 
   bool override_applied = false;
   uint32_t delay_seconds =
@@ -807,6 +815,18 @@ void sm_kstuff_game_on_exit(pid_t pid) {
     log_debug("  [GAME] detected app crash after kstuff auto-pause: "
               "%s %us after launch",
               g_kstuff.game.title_id, (unsigned)(elapsed_us / 1000000ull));
+    uint32_t current_delay_seconds =
+        get_effective_pause_delay_seconds(&g_kstuff.game);
+    uint32_t tuned_delay_seconds = 0;
+    if (upsert_kstuff_autotune_pause_delay(g_kstuff.game.title_id,
+                                           current_delay_seconds,
+                                           &tuned_delay_seconds)) {
+      log_debug("  [KSTUFF] autotune pause delay updated: %s=%us",
+                g_kstuff.game.title_id, tuned_delay_seconds);
+      notify_system_info("Crash detected: pause delay for %s increased to %us. "
+                         "Launch the game again.",
+                         g_kstuff.game.title_id, tuned_delay_seconds);
+    }
   }
   log_debug("  [KSTUFF] game stopped: %s pid=%ld",
             g_kstuff.game.title_id, (long)pid);
@@ -912,4 +932,17 @@ static bool is_ignored_focus_app_id(uint32_t app_id) {
     return true;
   return g_kstuff.game.active && g_kstuff.game.app_id != 0 &&
          app_id == g_kstuff.game.app_id;
+}
+
+static uint32_t get_effective_pause_delay_seconds(const kstuff_game_entry_t *entry) {
+  if (!entry || entry->launch_time_us == 0 || entry->pause_deadline_us == 0 ||
+      entry->pause_deadline_us <= entry->launch_time_us) {
+    return 0;
+  }
+
+  uint64_t delay_us = entry->pause_deadline_us - entry->launch_time_us;
+  uint64_t delay_seconds = delay_us / 1000000ull;
+  if (delay_seconds > UINT32_MAX)
+    delay_seconds = UINT32_MAX;
+  return (uint32_t)delay_seconds;
 }

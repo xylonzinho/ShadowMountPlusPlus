@@ -25,5 +25,12 @@ bool is_kstuff_pause_disabled_for_title(const char *title_id);
 // Resolve a per-title kstuff pause-delay override in seconds.
 bool get_kstuff_pause_delay_override_for_title(const char *title_id,
                                                uint32_t *delay_seconds_out);
+// Resolve a per-title autotuned kstuff pause-delay override in seconds.
+bool get_kstuff_autotune_pause_delay_for_title(const char *title_id,
+                                               uint32_t *delay_seconds_out);
+// Upsert an autotuned pause-delay override for the title.
+bool upsert_kstuff_autotune_pause_delay(const char *title_id,
+                                        uint32_t current_delay_seconds,
+                                        uint32_t *delay_seconds_out);
 
 #endif

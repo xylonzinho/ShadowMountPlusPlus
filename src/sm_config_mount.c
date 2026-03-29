@@ -60,9 +60,77 @@ static atomic_bool g_runtime_cfg_ready = false;
 static config_file_stamp_t g_config_file_stamp;
 
 static char *trim_ascii(char *s);
+static bool parse_ini_line(char *line, char **key_out, char **value_out);
 static bool normalize_title_id_value(const char *value,
                                      char out[MAX_TITLE_ID]);
 static config_load_status_t load_runtime_config_state(runtime_config_state_t *state);
+static bool parse_u32_ini(const char *value, uint32_t *out);
+static bool set_kstuff_pause_delay_override_rule(runtime_config_state_t *state,
+                                                 const char *value);
+static bool parse_kstuff_delay_rule_value(const char *value,
+                                          char title_id_out[MAX_TITLE_ID],
+                                          uint32_t *delay_seconds_out);
+static bool parse_kstuff_delay_rule_line(const char *key, const char *value,
+                                         char title_id_out[MAX_TITLE_ID],
+                                         uint32_t *delay_seconds_out);
+static bool lookup_kstuff_delay_override_in_file(const char *path,
+                                                 const char *title_id,
+                                                 uint32_t *delay_seconds_out);
+static bool upsert_kstuff_delay_override_in_file(const char *path,
+                                                 const char *title_id,
+                                                 uint32_t delay_seconds);
+
+static char *trim_ascii(char *s) {
+  while (*s == ' ' || *s == '\t' || *s == '\r' || *s == '\n')
+    s++;
+
+  size_t n = strlen(s);
+  while (n > 0) {
+    char c = s[n - 1];
+    if (c != ' ' && c != '\t' && c != '\r' && c != '\n')
+      break;
+    s[n - 1] = '\0';
+    n--;
+  }
+
+  return s;
+}
+
+static bool parse_ini_line(char *line, char **key_out, char **value_out) {
+  if (!line || !key_out || !value_out)
+    return false;
+
+  char *s = trim_ascii(line);
+  if (s[0] == '\0' || s[0] == '#' || s[0] == ';' || s[0] == '[')
+    return false;
+
+  char *eq = strchr(s, '=');
+  if (!eq)
+    return false;
+
+  *eq = '\0';
+  char *key = trim_ascii(s);
+  char *value = trim_ascii(eq + 1);
+
+  char *comment = strchr(value, '#');
+  if (comment) {
+    *comment = '\0';
+    value = trim_ascii(value);
+  }
+
+  comment = strchr(value, ';');
+  if (comment) {
+    *comment = '\0';
+    value = trim_ascii(value);
+  }
+
+  if (key[0] == '\0' || value[0] == '\0')
+    return false;
+
+  *key_out = key;
+  *value_out = value;
+  return true;
+}
 
 static const runtime_config_state_t *active_runtime_state(void) {
   return &g_runtime_state_slots[atomic_load_explicit(&g_runtime_state_active_index,
@@ -309,18 +377,34 @@ bool get_kstuff_pause_delay_override_for_title(const char *title_id,
   return false;
 }
 
-static char *trim_ascii(char *s) {
-  while (*s == ' ' || *s == '\t' || *s == '\r' || *s == '\n')
-    s++;
-  size_t n = strlen(s);
-  while (n > 0) {
-    char c = s[n - 1];
-    if (c != ' ' && c != '\t' && c != '\r' && c != '\n')
-      break;
-    s[n - 1] = '\0';
-    n--;
+bool get_kstuff_autotune_pause_delay_for_title(const char *title_id,
+                                               uint32_t *delay_seconds_out) {
+  return lookup_kstuff_delay_override_in_file(AUTOTUNE_FILE, title_id,
+                                              delay_seconds_out);
+}
+
+bool upsert_kstuff_autotune_pause_delay(const char *title_id,
+                                        uint32_t current_delay_seconds,
+                                        uint32_t *delay_seconds_out) {
+  if (delay_seconds_out)
+    *delay_seconds_out = 0;
+
+  char normalized[MAX_TITLE_ID];
+  if (!normalize_title_id_value(title_id, normalized))
+    return false;
+
+  uint64_t tuned_delay_seconds = (uint64_t)current_delay_seconds * 2ull;
+  if (tuned_delay_seconds == 0)
+    tuned_delay_seconds = 1;
+  if (tuned_delay_seconds > MAX_KSTUFF_PAUSE_DELAY_SECONDS)
+    tuned_delay_seconds = MAX_KSTUFF_PAUSE_DELAY_SECONDS;
+  if (!upsert_kstuff_delay_override_in_file(AUTOTUNE_FILE, normalized,
+                                            (uint32_t)tuned_delay_seconds)) {
+    return false;
   }
-  return s;
+  if (delay_seconds_out)
+    *delay_seconds_out = (uint32_t)tuned_delay_seconds;
+  return true;
 }
 
 static bool normalize_title_id_value(const char *value,
@@ -361,6 +445,187 @@ static bool parse_bool_ini(const char *value, bool *out) {
     *out = false;
     return true;
   }
+  return false;
+}
+
+static bool parse_kstuff_delay_rule_value(const char *value,
+                                          char title_id_out[MAX_TITLE_ID],
+                                          uint32_t *delay_seconds_out) {
+  if (!value || !title_id_out || !delay_seconds_out)
+    return false;
+
+  char local[128];
+  (void)strlcpy(local, value, sizeof(local));
+
+  char *sep = strchr(local, ':');
+  if (!sep)
+    return false;
+  *sep = '\0';
+
+  char *title_id = trim_ascii(local);
+  char *delay_value = trim_ascii(sep + 1);
+  if (!normalize_title_id_value(title_id, title_id_out))
+    return false;
+  if (!parse_u32_ini(delay_value, delay_seconds_out) ||
+      *delay_seconds_out > MAX_KSTUFF_PAUSE_DELAY_SECONDS) {
+    return false;
+  }
+
+  return true;
+}
+
+static bool parse_kstuff_delay_rule_line(const char *key, const char *value,
+                                         char title_id_out[MAX_TITLE_ID],
+                                         uint32_t *delay_seconds_out) {
+  if (!key || !value || !title_id_out || !delay_seconds_out)
+    return false;
+
+  if (strcasecmp(key, "kstuff_delay") == 0)
+    return parse_kstuff_delay_rule_value(value, title_id_out, delay_seconds_out);
+
+  if (!normalize_title_id_value(key, title_id_out))
+    return false;
+  if (!parse_u32_ini(value, delay_seconds_out) ||
+      *delay_seconds_out > MAX_KSTUFF_PAUSE_DELAY_SECONDS) {
+    return false;
+  }
+
+  return true;
+}
+
+static bool lookup_kstuff_delay_override_in_file(const char *path,
+                                                 const char *title_id,
+                                                 uint32_t *delay_seconds_out) {
+  if (!path || !title_id || !delay_seconds_out)
+    return false;
+
+  char normalized_title_id[MAX_TITLE_ID];
+  if (!normalize_title_id_value(title_id, normalized_title_id))
+    return false;
+
+  FILE *f = fopen(path, "r");
+  if (!f)
+    return false;
+
+  char line[512];
+  while (fgets(line, sizeof(line), f)) {
+    char *key = NULL;
+    char *value = NULL;
+    if (!parse_ini_line(line, &key, &value))
+      continue;
+
+    uint32_t delay_seconds = 0;
+    char parsed_title_id[MAX_TITLE_ID];
+    if (!parse_kstuff_delay_rule_line(key, value, parsed_title_id,
+                                      &delay_seconds)) {
+      continue;
+    }
+    if (strcmp(parsed_title_id, normalized_title_id) != 0)
+      continue;
+
+    fclose(f);
+    *delay_seconds_out = delay_seconds;
+    return true;
+  }
+
+  fclose(f);
+  return false;
+}
+
+static bool upsert_kstuff_delay_override_in_file(const char *path,
+                                                 const char *title_id,
+                                                 uint32_t delay_seconds) {
+  if (!path || !title_id || delay_seconds > MAX_KSTUFF_PAUSE_DELAY_SECONDS)
+    return false;
+
+  char normalized_title_id[MAX_TITLE_ID];
+  if (!normalize_title_id_value(title_id, normalized_title_id))
+    return false;
+
+  char temp_path[MAX_PATH];
+  int written = snprintf(temp_path, sizeof(temp_path), "%s.tmp", path);
+  if (written <= 0 || (size_t)written >= sizeof(temp_path))
+    return false;
+
+  FILE *in = fopen(path, "r");
+  FILE *out = fopen(temp_path, "w");
+  if (!out) {
+    log_debug("  [CFG] autotune temp open failed: %s (%s)", temp_path,
+              strerror(errno));
+    if (in)
+      fclose(in);
+    return false;
+  }
+
+  bool found = false;
+  if (in) {
+    char line[512];
+    while (fgets(line, sizeof(line), in)) {
+      char original[sizeof(line)];
+      (void)strlcpy(original, line, sizeof(original));
+
+      char *key = NULL;
+      char *value = NULL;
+      if (!parse_ini_line(line, &key, &value)) {
+        if (fputs(original, out) == EOF)
+          goto write_failed;
+        continue;
+      }
+
+      uint32_t parsed_delay = 0;
+      char parsed_title_id[MAX_TITLE_ID];
+      if (!parse_kstuff_delay_rule_line(key, value, parsed_title_id,
+                                        &parsed_delay) ||
+          strcmp(parsed_title_id, normalized_title_id) != 0) {
+        if (fputs(original, out) == EOF)
+          goto write_failed;
+        continue;
+      }
+
+      if (!found) {
+        if (fprintf(out, "kstuff_delay=%s:%u\n", normalized_title_id,
+                    (unsigned)delay_seconds) < 0) {
+          goto write_failed;
+        }
+        found = true;
+      }
+    }
+
+    fclose(in);
+    in = NULL;
+  }
+
+  if (!found &&
+      fprintf(out, "kstuff_delay=%s:%u\n", normalized_title_id,
+              (unsigned)delay_seconds) < 0) {
+    goto write_failed;
+  }
+
+  if (fclose(out) != 0) {
+    out = NULL;
+    log_debug("  [CFG] autotune temp close failed: %s (%s)", temp_path,
+              strerror(errno));
+    unlink(temp_path);
+    return false;
+  }
+  out = NULL;
+
+  if (rename(temp_path, path) != 0) {
+    log_debug("  [CFG] autotune replace failed: %s -> %s (%s)", temp_path, path,
+              strerror(errno));
+    unlink(temp_path);
+    return false;
+  }
+
+  return true;
+
+write_failed:
+  log_debug("  [CFG] autotune temp write failed: %s (%s)", temp_path,
+            strerror(errno));
+  if (in)
+    fclose(in);
+  fclose(out);
+  unlink(temp_path);
   return false;
 }
 
@@ -447,28 +712,13 @@ static bool add_kstuff_no_pause_title_rule(runtime_config_state_t *state,
 
 static bool set_kstuff_pause_delay_override_rule(runtime_config_state_t *state,
                                                  const char *value) {
-  if (!value)
+  if (!state || !value)
     return false;
 
-  char local[128];
-  (void)strlcpy(local, value, sizeof(local));
-
-  char *sep = strchr(local, ':');
-  if (!sep)
-    return false;
-  *sep = '\0';
-
-  char *title_id = trim_ascii(local);
-  char *delay_value = trim_ascii(sep + 1);
   char normalized[MAX_TITLE_ID];
   uint32_t delay_seconds = 0;
-
-  if (!normalize_title_id_value(title_id, normalized))
+  if (!parse_kstuff_delay_rule_value(value, normalized, &delay_seconds))
     return false;
-  if (!parse_u32_ini(delay_value, &delay_seconds) ||
-      delay_seconds > MAX_KSTUFF_PAUSE_DELAY_SECONDS) {
-    return false;
-  }
 
   for (int i = 0; i < MAX_KSTUFF_TITLE_RULES; ++i) {
     if (!state->kstuff_delay_rules[i].valid)
@@ -512,32 +762,17 @@ static config_load_status_t load_runtime_config_state(runtime_config_state_t *st
   bool legacy_recursive_scan_requested = false;
   while (fgets(line, sizeof(line), f)) {
     line_no++;
-    char *s = trim_ascii(line);
-    if (s[0] == '\0' || s[0] == '#' || s[0] == ';' || s[0] == '[')
-      continue;
-
-    char *eq = strchr(s, '=');
-    if (!eq) {
+    char *key = NULL;
+    char *value = NULL;
+    if (!parse_ini_line(line, &key, &value)) {
+      char *trimmed = trim_ascii(line);
+      if (trimmed[0] == '\0' || trimmed[0] == '#' || trimmed[0] == ';' ||
+          trimmed[0] == '[') {
+        continue;
+      }
       log_debug("  [CFG] invalid line %d (missing '=')", line_no);
       continue;
     }
-    *eq = '\0';
-    char *key = trim_ascii(s);
-    char *value = trim_ascii(eq + 1);
-
-    char *comment = strchr(value, '#');
-    if (comment) {
-      *comment = '\0';
-      value = trim_ascii(value);
-    }
-    comment = strchr(value, ';');
-    if (comment) {
-      *comment = '\0';
-      value = trim_ascii(value);
-    }
-
-    if (key[0] == '\0' || value[0] == '\0')
-      continue;
 
     bool bval = false;
     uint32_t u32 = 0;

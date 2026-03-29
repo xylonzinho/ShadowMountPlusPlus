@@ -1,7 +1,5 @@
 # ShadowMountPlus (PS5)
 
-**Version:** `1.6beta5`
-
 **Repository:** https://github.com/drakmor/shadowMountPlus
 
 **Warning! Mounting images can cause shutdown problems and data corruption on internal drives! This depends on many factors, but is more common with older firmware versions. Please take this into account when testing.**
@@ -59,6 +57,9 @@ Supported keys (all optional):
 - `kstuff_pause_delay_direct_seconds=<0..3600>` (delay before pausing kstuff for direct/non-image launches; default: `10`)
 - `kstuff_no_pause=<TITLE_ID>` (repeatable; keeps kstuff enabled for matching titles)
 - `kstuff_delay=<TITLE_ID>:<0..3600>` (repeatable; per-title pause delay override, last matching rule wins)
+- `/data/shadowmount/autotune.ini` may also provide per-title pause-delay overrides with highest priority:
+  - `kstuff_delay=<TITLE_ID>:<0..3600>`
+  - `<TITLE_ID>=<0..3600>`
 - `scanpath=<absolute_path>` (can be repeated on multiple lines; default: built-in scan path list below)
 - `lvd_exfat_sector_size=<value>` (default: `512`)
 - `lvd_ufs_sector_size=<value>` (default: `4096`)
@@ -103,13 +104,15 @@ Kstuff game lifecycle behavior:
 - Image-backed launches use `kstuff_pause_delay_image_seconds`; direct/non-image launches use `kstuff_pause_delay_direct_seconds`.
 - `kstuff_no_pause` skips auto-pause entirely for matching title IDs.
 - `kstuff_delay` overrides the pause delay for matching title IDs, regardless of image/direct launch type.
+- `/data/shadowmount/autotune.ini` overrides both `config.ini` and `autopause.txt` for matching title IDs.
 - A game source folder may optionally contain `autopause.txt`; it is read once at launch time.
-- Priority order is: `kstuff_delay` from `config.ini` -> `autopause.txt` -> global direct/image default delay.
+- Priority order is: `autotune.ini` -> `kstuff_delay` from `config.ini` -> `autopause.txt` -> global direct/image default delay.
 - If `autopause.txt` contains only a number, that value is used for direct launches and doubled for image-backed launches.
 - `autopause.txt` may also use:
   - `direct=<seconds>`
   - `image=<seconds>`
 - If both kinds of rule target the same title, `kstuff_no_pause` takes priority.
+- When ShadowMountPlus detects an early post-auto-pause crash, it doubles the current effective pause delay for that title and upserts it into `/data/shadowmount/autotune.ini` (up to `3600` seconds), then prompts you to launch the game again.
 - When the last tracked game stops, ShadowMount immediately enables kstuff again if it was the component that disabled it.
 
 
