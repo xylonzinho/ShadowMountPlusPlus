@@ -9,7 +9,7 @@ VERSION_TAG := $(shell git describe --abbrev=6 --dirty --always --tags 2>/dev/nu
 
 # Standard Flags (No extra libraries)
 CFLAGS := -O3 -flto -DNDEBUG -ffunction-sections -fdata-sections -Wall -Wextra -Wstrict-prototypes -Wmissing-prototypes -Werror=strict-prototypes -Werror=missing-prototypes -D_BSD_SOURCE -std=gnu11 -Iinclude -Isrc
-CFLAGS += -DSHADOWMOUNT_VERSION="$(VERSION_TAG)"
+CFLAGS += '-DSHADOWMOUNT_VERSION="$(VERSION_TAG)"'
 
 # Linker
 LDFLAGS := -flto -Wl,--gc-sections
