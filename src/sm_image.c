@@ -858,21 +858,6 @@ static bool try_brute_mount_with_profile(const brute_mount_attempt_t *attempt,
     (void)strlcpy(attempt->devname_out, devname, attempt->devname_size);
 
   // Try nmount with this profile's fstype
-  struct iovec iov_pfs[] = {
-      IOVEC_ENTRY("from"),       IOVEC_ENTRY(devname),
-      IOVEC_ENTRY("fspath"),     IOVEC_ENTRY(attempt->mount_point),
-      IOVEC_ENTRY("fstype"),     IOVEC_ENTRY(profile->fstype),
-      IOVEC_ENTRY("sigverify"),  IOVEC_ENTRY(profile->sigverify ? "1" : "0"),
-      IOVEC_ENTRY("mkeymode"),   IOVEC_ENTRY(profile->mkeymode),
-      IOVEC_ENTRY("budgetid"),   IOVEC_ENTRY(profile->budgetid),
-      IOVEC_ENTRY("playgo"),     IOVEC_ENTRY(profile->playgo ? "1" : "0"),
-      IOVEC_ENTRY("disc"),       IOVEC_ENTRY(profile->disc ? "1" : "0"),
-      IOVEC_ENTRY("ekpfs"),      IOVEC_ENTRY(PFS_ZERO_EKPFS_KEY_HEX),
-      IOVEC_ENTRY("async"),      IOVEC_ENTRY(NULL),
-      IOVEC_ENTRY("noatime"),    IOVEC_ENTRY(NULL),
-      IOVEC_ENTRY("automounted"), IOVEC_ENTRY(NULL),
-  };
-
   char mount_errmsg[256];
   memset(mount_errmsg, 0, sizeof(mount_errmsg));
   struct iovec iov_pfs_with_err[] = {

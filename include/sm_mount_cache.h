@@ -2,6 +2,7 @@
 #define SM_MOUNT_CACHE_H
 
 #include <stdbool.h>
+#include <stddef.h>
 
 #include "sm_mount_profile.h"
 #include "sm_types.h"
