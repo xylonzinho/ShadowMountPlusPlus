@@ -130,6 +130,12 @@ typedef struct runtime_config {
   uint32_t pfs_bruteforce_sleep_ms;
   uint32_t pfs_bruteforce_max_attempts;
   uint32_t pfs_bruteforce_max_seconds_per_image;
+  uint32_t pfs_bruteforce_cooldown_seconds;
+  uint32_t pfs_bruteforce_max_global_attempts_per_scan;
+  char pfs_bruteforce_sector_sizes[64];
+  char pfs_bruteforce_image_types[64];
+  char pfs_bruteforce_raw_flags[64];
+  char pfs_bruteforce_fstypes[64];
 } runtime_config_t;
 
 typedef enum {

@@ -117,6 +117,19 @@ pfs_bruteforce_max_attempts=20
 # Maximum time per image (seconds) before moving to next:
 pfs_bruteforce_max_seconds_per_image=60
 
+# Cooldown after full exhaustion (seconds). During cooldown, heavy brute-force
+# is skipped for that image so scan can continue with others.
+pfs_bruteforce_cooldown_seconds=300
+
+# Global cap for brute-force attempts per scan window.
+pfs_bruteforce_max_global_attempts=200
+
+# Optional list overrides (currently advisory; parser accepts these keys):
+pfs_bruteforce_sector_sizes=4096,32768,65536
+pfs_bruteforce_image_types=0,5,1,2,3,4,6,7
+pfs_bruteforce_raw_flags=0x9,0x8,0xD,0xC
+pfs_bruteforce_fstypes=pfs,ppr_pfs,transaction_pfs
+
 # Tested profiles are cached in /data/shadowmount/autotune.ini
 # and reused automatically on future mounts of the same image.
 # The cache section line format is:

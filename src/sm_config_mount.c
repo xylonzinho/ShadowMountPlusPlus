@@ -262,6 +262,17 @@ static void init_runtime_config_defaults(runtime_config_state_t *state) {
   state->cfg.pfs_bruteforce_sleep_ms = 3000u;
   state->cfg.pfs_bruteforce_max_attempts = 20u;
   state->cfg.pfs_bruteforce_max_seconds_per_image = 60u;
+  state->cfg.pfs_bruteforce_cooldown_seconds = 300u;
+  state->cfg.pfs_bruteforce_max_global_attempts_per_scan = 200u;
+  (void)strlcpy(state->cfg.pfs_bruteforce_sector_sizes, "4096,32768,65536",
+                sizeof(state->cfg.pfs_bruteforce_sector_sizes));
+  (void)strlcpy(state->cfg.pfs_bruteforce_image_types, "0,5,1,2,3,4,6,7",
+                sizeof(state->cfg.pfs_bruteforce_image_types));
+  (void)strlcpy(state->cfg.pfs_bruteforce_raw_flags, "0x9,0x8,0xD,0xC",
+                sizeof(state->cfg.pfs_bruteforce_raw_flags));
+  (void)strlcpy(state->cfg.pfs_bruteforce_fstypes,
+                "pfs,ppr_pfs,transaction_pfs",
+                sizeof(state->cfg.pfs_bruteforce_fstypes));
   memset(state->image_mode_rules, 0, sizeof(state->image_mode_rules));
   clear_kstuff_title_rules(state);
   init_runtime_scan_paths_defaults(state);
@@ -1348,6 +1359,50 @@ static config_load_status_t load_runtime_config_state(runtime_config_state_t *st
       continue;
     }
 
+    if (strcasecmp(key, "pfs_bruteforce_cooldown_seconds") == 0) {
+      if (!parse_u32_ini(value, &u32)) {
+        log_debug("  [CFG] invalid cooldown at line %d: %s=%s", line_no, key,
+                  value);
+        continue;
+      }
+      state->cfg.pfs_bruteforce_cooldown_seconds = u32;
+      continue;
+    }
+
+    if (strcasecmp(key, "pfs_bruteforce_max_global_attempts") == 0) {
+      if (!parse_u32_ini(value, &u32) || u32 == 0) {
+        log_debug("  [CFG] invalid global attempts at line %d: %s=%s",
+                  line_no, key, value);
+        continue;
+      }
+      state->cfg.pfs_bruteforce_max_global_attempts_per_scan = u32;
+      continue;
+    }
+
+    if (strcasecmp(key, "pfs_bruteforce_sector_sizes") == 0) {
+      (void)strlcpy(state->cfg.pfs_bruteforce_sector_sizes, value,
+                    sizeof(state->cfg.pfs_bruteforce_sector_sizes));
+      continue;
+    }
+
+    if (strcasecmp(key, "pfs_bruteforce_image_types") == 0) {
+      (void)strlcpy(state->cfg.pfs_bruteforce_image_types, value,
+                    sizeof(state->cfg.pfs_bruteforce_image_types));
+      continue;
+    }
+
+    if (strcasecmp(key, "pfs_bruteforce_raw_flags") == 0) {
+      (void)strlcpy(state->cfg.pfs_bruteforce_raw_flags, value,
+                    sizeof(state->cfg.pfs_bruteforce_raw_flags));
+      continue;
+    }
+
+    if (strcasecmp(key, "pfs_bruteforce_fstypes") == 0) {
+      (void)strlcpy(state->cfg.pfs_bruteforce_fstypes, value,
+                    sizeof(state->cfg.pfs_bruteforce_fstypes));
+      continue;
+    }
+
     bool is_sector_key =
         (strcasecmp(key, "lvd_exfat_sector_size") == 0) ||
         (strcasecmp(key, "lvd_ufs_sector_size") == 0) ||
@@ -1420,7 +1475,8 @@ static config_load_status_t load_runtime_config_state(runtime_config_state_t *st
             "lvd_sec(exfat=%u ufs=%u zfs=%u pfs=%u) md_sec(exfat=%u ufs=%u zfs=%u) "
             "scan_interval_s=%u stability_wait_s=%u scan_paths=%d image_rules=%d "
             "kstuff_no_pause=%d kstuff_delay_rules=%d "
-            "pfs_bruteforce_enabled=%d sleep_ms=%u max_attempts=%u max_s=%u",
+            "pfs_bruteforce_enabled=%d sleep_ms=%u max_attempts=%u max_s=%u "
+            "cooldown_s=%u max_global=%u",
             state->cfg.debug_enabled ? 1 : 0, state->cfg.quiet_mode ? 1 : 0,
             state->cfg.mount_read_only ? 1 : 0,
             state->cfg.force_mount ? 1 : 0, state->cfg.scan_depth,
@@ -1443,7 +1499,9 @@ static config_load_status_t load_runtime_config_state(runtime_config_state_t *st
             state->cfg.pfs_bruteforce_enabled ? 1 : 0,
             state->cfg.pfs_bruteforce_sleep_ms,
             state->cfg.pfs_bruteforce_max_attempts,
-            state->cfg.pfs_bruteforce_max_seconds_per_image);
+            state->cfg.pfs_bruteforce_max_seconds_per_image,
+            state->cfg.pfs_bruteforce_cooldown_seconds,
+            state->cfg.pfs_bruteforce_max_global_attempts_per_scan);
 
   return CONFIG_LOAD_OK;
 }

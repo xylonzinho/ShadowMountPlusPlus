@@ -91,6 +91,12 @@ For `.ffpfs` (PFS) images, ShadowMountPlus includes an optional adaptive mount s
 - `pfs_bruteforce_sleep_ms=<milliseconds>` (delay between failed attempts; default: `3000`)
 - `pfs_bruteforce_max_attempts=<count>` (max attempts per image; default: `20`)
 - `pfs_bruteforce_max_seconds_per_image=<seconds>` (max time per image; default: `60`)
+- `pfs_bruteforce_cooldown_seconds=<seconds>` (skip heavy brute-force on recently exhausted images; default: `300`)
+- `pfs_bruteforce_max_global_attempts=<count>` (global attempt cap per scan window; default: `200`)
+- `pfs_bruteforce_sector_sizes=<csv>` (parser-supported override key)
+- `pfs_bruteforce_image_types=<csv>` (parser-supported override key)
+- `pfs_bruteforce_raw_flags=<csv>` (parser-supported override key)
+- `pfs_bruteforce_fstypes=<csv>` (parser-supported override key)
 
 **Cache storage:**
 - Successful profiles are automatically cached in `/data/shadowmount/autotune.ini` with the line format:
