@@ -97,3 +97,28 @@ md_zfs_sector_size=512
 # "/mnt/shadowmnt" is always added automatically.
 # scanpath=/data/homebrew
 # scanpath=/data/etaHEN/games
+
+# ===== Adaptive Mount Strategy (Brute-Force) for PFS Discovery =====
+# These settings control the PFS parameter discovery system.
+# When a PFS image mount fails or has unknown structure, the system
+# automatically tries different parameter combinations to find what works.
+
+# Enable adaptive mount strategy for PFS images:
+# 1/true/yes/on  -> enable brute-force parameter discovery (recommended for PFS)
+# 0/false/no/off -> use fixed defaults only
+pfs_bruteforce_enabled=1
+
+# Sleep duration between failed mount attempts (milliseconds):
+pfs_bruteforce_sleep_ms=3000
+
+# Maximum attempts per image before giving up:
+pfs_bruteforce_max_attempts=20
+
+# Maximum time per image (seconds) before moving to next:
+pfs_bruteforce_max_seconds_per_image=60
+
+# Tested profiles are cached in /data/shadowmount/autotune.ini
+# and reused automatically on future mounts of the same image.
+# The cache section line format is:
+#   mount_profile=<image_filename>:<profile_data>
+

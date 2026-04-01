@@ -125,6 +125,11 @@ typedef struct runtime_config {
   uint32_t md_sector_exfat;
   uint32_t md_sector_ufs;
   uint32_t md_sector_zfs;
+  // Adaptive mount strategy (brute-force) configuration
+  bool pfs_bruteforce_enabled;
+  uint32_t pfs_bruteforce_sleep_ms;
+  uint32_t pfs_bruteforce_max_attempts;
+  uint32_t pfs_bruteforce_max_seconds_per_image;
 } runtime_config_t;
 
 typedef enum {

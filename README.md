@@ -75,6 +75,36 @@ Supported keys (all optional):
 - `md_ufs_sector_size=<value>` (default: `512`)
 - `md_zfs_sector_size=<value>` (default: `512`)
 
+## Adaptive Mount Strategy (Brute-Force Parameter Discovery)
+
+For `.ffpfs` (PFS) images, ShadowMountPlus includes an optional adaptive mount strategy that automatically discovers the correct mount parameters when the standard defaults don't work. This is useful for PFS dumps with non-standard metadata or sector layouts.
+
+**How it works:**
+1. When mounting a PFS image, if the standard mount fails, the system tries a bounded set of parameter combinations.
+2. Each combination (image type, raw flags, sector size, filesystem variant) is attempted in priority order.
+3. After each failed attempt, the system waits 3 seconds and cleans up before trying the next combination.
+4. When a successful mount is found, the winning parameters are cached and reused for future mounts of the same image.
+5. If all combinations fail, the image is marked as failed and the scan moves to the next image.
+
+**Configuration keys (all optional, all PFS-specific):**
+- `pfs_bruteforce_enabled=1|0` (enable/disable; default: `1`)
+- `pfs_bruteforce_sleep_ms=<milliseconds>` (delay between failed attempts; default: `3000`)
+- `pfs_bruteforce_max_attempts=<count>` (max attempts per image; default: `20`)
+- `pfs_bruteforce_max_seconds_per_image=<seconds>` (max time per image; default: `60`)
+
+**Cache storage:**
+- Successful profiles are automatically cached in `/data/shadowmount/autotune.ini` with the line format:
+  ```ini
+  mount_profile=<image_filename>:<profile_data>
+  ```
+- The cache is consulted first on every mount, significantly accelerating subsequent mounts of the same image.
+
+**Example workflow:**
+1. First mount of `MyGame.ffpfs` fails with standard parameters.
+2. Brute-force discovers that image_type=5, raw_flags=0x8, sector_size=4096, fstype=pfs works.
+3. Profile is cached in autotune.ini.
+4. Next mount of `MyGame.ffpfs` tries the cached profile first and succeeds immediately.
+
 Per-image mode override behavior:
 - Match is done by image file name (without path).
 - File names with spaces are supported.
