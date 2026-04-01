@@ -1,6 +1,7 @@
 #include "sm_brute_force.h"
 
 #include <errno.h>
+#include <stdio.h>
 #include <string.h>
 #include <time.h>
 
@@ -57,6 +58,8 @@ bool brute_record_attempt(brute_attempt_state_t *state,
   if (!state)
     return false;
 
+  (void)result;
+
   state->total_attempts++;
   return brute_should_continue(state);
 }
@@ -69,6 +72,8 @@ int brute_generate_pfs_candidates(const char *image_path,
                                   int max_count) {
   if (!image_path || !candidates || max_count <= 0)
     return 0;
+
+  (void)fs_type;
 
   const uint16_t *image_types = NULL;
   size_t image_types_count = 0;
@@ -135,10 +140,7 @@ int brute_generate_pfs_candidates(const char *image_path,
             profile->normalized_flags = (uint16_t)(8u * ((uint32_t)profile->raw_flags & 1u) + 4u);
           }
 
-          char label_buf[64];
-          snprintf(label_buf, sizeof(label_buf),
-                   "stage%d_%u", stage, (unsigned)candidate_count);
-          profile->label = label_buf; // Note: caller must copy this or save immediately
+          profile->label = NULL;
 
           candidate_count++;
         }
