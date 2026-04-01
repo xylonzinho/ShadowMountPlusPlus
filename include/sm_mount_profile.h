@@ -44,6 +44,9 @@ typedef struct {
   
   // Disc flag (0 or 1)
   uint8_t disc;
+
+  // Whether the ekpfs key should be included for this attempt.
+  bool include_ekpfs;
   
   // Read-only mode flag
   bool mount_read_only;

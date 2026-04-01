@@ -70,12 +70,13 @@ void mount_profile_format_compact(const mount_profile_t *profile,
     return;
   
   snprintf(buf, buf_size,
-           "img=%u raw=0x%x flags=0x%x sec=%u fstype=%s budget=%s "
-           "mkeymode=%s sigv=%u playgo=%u disc=%u ro=%d",
+           "img=%u raw=0x%x flags=0x%x sec=%u sec2=%u fstype=%s budget=%s "
+           "mkeymode=%s sigv=%u playgo=%u disc=%u ekpfs=%u ro=%d",
            profile->image_type, profile->raw_flags, profile->normalized_flags,
-           profile->sector_size, profile->fstype, profile->budgetid,
-           profile->mkeymode, profile->sigverify, profile->playgo,
-           profile->disc, profile->mount_read_only ? 1 : 0);
+           profile->sector_size, profile->secondary_unit, profile->fstype,
+           profile->budgetid, profile->mkeymode, profile->sigverify,
+           profile->playgo, profile->disc, profile->include_ekpfs ? 1u : 0u,
+           profile->mount_read_only ? 1 : 0);
 }
 
 mount_profile_t mount_profile_create_default(image_fs_type_t fs_type,
@@ -93,6 +94,7 @@ mount_profile_t mount_profile_create_default(image_fs_type_t fs_type,
   profile.sigverify = (PFS_MOUNT_SIGVERIFY != 0) ? 1u : 0u;
   profile.playgo = (PFS_MOUNT_PLAYGO != 0) ? 1u : 0u;
   profile.disc = (PFS_MOUNT_DISC != 0) ? 1u : 0u;
+  profile.include_ekpfs = (fs_type == IMAGE_FS_PFS);
   profile.mount_read_only = mount_read_only;
   profile.label = "default";
   

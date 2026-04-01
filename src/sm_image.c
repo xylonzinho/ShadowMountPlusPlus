@@ -781,6 +781,34 @@ typedef struct {
 } pfs_nmount_profile_t;
 
 typedef struct {
+  const uint16_t *image_types;
+  size_t image_type_count;
+  const uint16_t *raw_flags;
+  size_t raw_flag_count;
+  const uint32_t *sector_sizes;
+  size_t sector_size_count;
+  bool force_secondary_65536;
+  const char *label;
+} pfs_attach_pass_t;
+
+typedef struct {
+  const runtime_config_t *cfg;
+  const char *file_path;
+  image_fs_type_t fs_type;
+  off_t file_size;
+  const char *mount_point;
+  bool mount_read_only;
+  bool force_mount;
+  time_t start_time;
+  uint32_t attempt_idx;
+  bool limit_logged;
+  uint32_t attach_einval_count;
+  uint32_t nmount_einval_count;
+  uint32_t nmount_semantic_count;
+  uint32_t other_fail_count;
+} pfs_bruteforce_state_t;
+
+typedef struct {
   char path[MAX_PATH];
   time_t cooldown_until;
   bool cooldown_logged;
@@ -966,6 +994,313 @@ static bool stage_b_nmount_profile(const char *mount_point, const char *devname,
   return false;
 }
 
+static bool pfs_bruteforce_limits_reached(pfs_bruteforce_state_t *state) {
+  time_t now = time(NULL);
+  bool reached =
+      state->attempt_idx >= state->cfg->pfs_bruteforce_max_attempts ||
+      (uint32_t)(now - state->start_time) >=
+          state->cfg->pfs_bruteforce_max_seconds_per_image ||
+      g_pfs_global_attempts >=
+          state->cfg->pfs_bruteforce_max_global_attempts_per_scan;
+
+  if (!reached || state->limit_logged)
+    return reached;
+
+  log_debug("  [IMG][BRUTE] limits reached: attempts=%u elapsed=%us global=%u",
+            state->attempt_idx, (unsigned)(now - state->start_time),
+            g_pfs_global_attempts);
+  state->limit_logged = true;
+  return true;
+}
+
+static void pfs_bruteforce_sleep(const pfs_bruteforce_state_t *state) {
+  if (state->cfg->pfs_bruteforce_sleep_ms > 0)
+    sceKernelUsleep(state->cfg->pfs_bruteforce_sleep_ms * 1000u);
+}
+
+static void fill_mount_profile_from_tuple(mount_profile_t *profile,
+                                          const pfs_attach_tuple_t *tuple,
+                                          const pfs_nmount_profile_t *np,
+                                          bool mount_read_only) {
+  memset(profile, 0, sizeof(*profile));
+  profile->io_version = LVD_ATTACH_IO_VERSION_V0;
+  profile->image_type = tuple->image_type;
+  profile->raw_flags = tuple->raw_flags;
+  profile->normalized_flags = tuple->normalized_flags;
+  profile->sector_size = tuple->sector_size;
+  profile->secondary_unit = tuple->secondary_unit;
+  profile->fstype = np->fstype;
+  profile->budgetid = np->budgetid;
+  profile->mkeymode = np->mkeymode;
+  profile->sigverify = np->sigverify;
+  profile->playgo = np->playgo;
+  profile->disc = np->disc;
+  profile->include_ekpfs = np->include_ekpfs;
+  profile->mount_read_only = mount_read_only;
+}
+
+static void count_attach_failure(pfs_bruteforce_state_t *state, int err) {
+  if (err == EINVAL)
+    state->attach_einval_count++;
+  else
+    state->other_fail_count++;
+}
+
+static void count_nmount_failure(pfs_bruteforce_state_t *state, int err) {
+  if (err == EINVAL)
+    state->nmount_einval_count++;
+  else if (err == EOPNOTSUPP)
+    state->nmount_semantic_count++;
+  else
+    state->other_fail_count++;
+}
+
+static bool pfs_try_nmount_profile(pfs_bruteforce_state_t *state,
+                                   const pfs_attach_tuple_t *tuple,
+                                   const pfs_nmount_profile_t *np,
+                                   int *unit_id_io, char *devname,
+                                   size_t devname_size,
+                                   mount_profile_t *winner_out) {
+  char errmsg[256];
+  int nmount_err = 0;
+  bool ok = stage_b_nmount_profile(state->mount_point, devname,
+                                   state->mount_read_only,
+                                   state->force_mount, np, errmsg,
+                                   sizeof(errmsg), &nmount_err);
+  g_pfs_global_attempts++;
+  log_debug("  [IMG][BRUTE] stage=B idx=%u tuple=(img=%u raw=0x%x sec=%u sec2=%u) opts=(fstype=%s budget=%s mkey=%s sig=%u playgo=%u disc=%u ekpfs=%d) result=%s errno=%d",
+            state->attempt_idx, tuple->image_type, tuple->raw_flags,
+            tuple->sector_size, tuple->secondary_unit, np->fstype,
+            np->budgetid ? np->budgetid : "-",
+            np->mkeymode ? np->mkeymode : "-", np->sigverify, np->playgo,
+            np->disc, np->include_ekpfs ? 1 : 0,
+            ok ? "NMOUNT_OK" : "NMOUNT_FAIL", nmount_err);
+  state->attempt_idx++;
+
+  if (ok && validate_mounted_image(state->file_path, state->fs_type,
+                                   ATTACH_BACKEND_LVD, *unit_id_io, devname,
+                                   state->mount_point)) {
+    fill_mount_profile_from_tuple(winner_out, tuple, np,
+                                  state->mount_read_only);
+    return true;
+  }
+
+  if (ok)
+    (void)unmount_image(state->file_path, *unit_id_io, ATTACH_BACKEND_LVD);
+  else
+    count_nmount_failure(state, nmount_err);
+
+  if (*unit_id_io >= 0)
+    (void)detach_attached_unit(ATTACH_BACKEND_LVD, *unit_id_io);
+  *unit_id_io = -1;
+  if (devname_size > 0)
+    devname[0] = '\0';
+  return false;
+}
+
+static bool pfs_try_attached_tuple_profiles(pfs_bruteforce_state_t *state,
+                                            const pfs_attach_tuple_t *tuple,
+                                            int *unit_id_io, char *devname,
+                                            size_t devname_size,
+                                            mount_profile_t *winner_out) {
+  static const pfs_nmount_profile_t k_pfs_primary_profiles[] = {
+      {.fstype = "pfs",
+       .budgetid = DEVPFS_BUDGET_GAME,
+       .mkeymode = DEVPFS_MKEYMODE_GD,
+       .sigverify = 0,
+       .playgo = 0,
+       .disc = 0,
+       .include_ekpfs = true,
+       .key_level = 3},
+      {.fstype = "pfs",
+       .budgetid = DEVPFS_BUDGET_GAME,
+       .mkeymode = DEVPFS_MKEYMODE_SD,
+       .sigverify = 0,
+       .playgo = 0,
+       .disc = 0,
+       .include_ekpfs = true,
+       .key_level = 3},
+      {.fstype = "pfs",
+       .budgetid = DEVPFS_BUDGET_GAME,
+       .mkeymode = DEVPFS_MKEYMODE_AC,
+       .sigverify = 0,
+       .playgo = 0,
+       .disc = 0,
+       .include_ekpfs = true,
+       .key_level = 3},
+      {.fstype = "pfs",
+       .budgetid = DEVPFS_BUDGET_SYSTEM,
+       .mkeymode = DEVPFS_MKEYMODE_GD,
+       .sigverify = 0,
+       .playgo = 0,
+       .disc = 0,
+       .include_ekpfs = true,
+       .key_level = 3},
+      {.fstype = "pfs",
+       .budgetid = DEVPFS_BUDGET_GAME,
+       .mkeymode = DEVPFS_MKEYMODE_GD,
+       .sigverify = 0,
+       .playgo = 0,
+       .disc = 0,
+       .include_ekpfs = false,
+       .key_level = 3},
+      {.fstype = "pfs",
+       .budgetid = DEVPFS_BUDGET_GAME,
+       .mkeymode = DEVPFS_MKEYMODE_GD,
+       .sigverify = 1,
+       .playgo = 0,
+       .disc = 0,
+       .include_ekpfs = true,
+       .key_level = 3},
+      {.fstype = "pfs",
+       .budgetid = DEVPFS_BUDGET_GAME,
+       .mkeymode = DEVPFS_MKEYMODE_GD,
+       .sigverify = 0,
+       .playgo = 1,
+       .disc = 0,
+       .include_ekpfs = true,
+       .key_level = 3},
+      {.fstype = "pfs",
+       .budgetid = DEVPFS_BUDGET_GAME,
+       .mkeymode = DEVPFS_MKEYMODE_GD,
+       .sigverify = 0,
+       .playgo = 0,
+       .disc = 1,
+       .include_ekpfs = true,
+       .key_level = 3},
+  };
+  static const char *k_fallback_fstypes[] = {"ppr_pfs", "transaction_pfs"};
+
+  for (size_t i = 0; i < sizeof(k_pfs_primary_profiles) / sizeof(k_pfs_primary_profiles[0]); i++) {
+    if (pfs_bruteforce_limits_reached(state))
+      return false;
+
+    if (pfs_try_nmount_profile(state, tuple, &k_pfs_primary_profiles[i],
+                               unit_id_io, devname, devname_size,
+                               winner_out)) {
+      return true;
+    }
+
+    if (pfs_bruteforce_limits_reached(state))
+      return false;
+
+    int attach_err = 0;
+    if (!stage_a_attach_tuple(state->file_path, state->file_size, tuple,
+                              unit_id_io, devname, devname_size,
+                              &attach_err)) {
+      count_attach_failure(state, attach_err);
+      return false;
+    }
+    pfs_bruteforce_sleep(state);
+  }
+
+  for (size_t i = 0; i < sizeof(k_fallback_fstypes) / sizeof(k_fallback_fstypes[0]); i++) {
+    uint8_t key_level = 0;
+    while (key_level <= 3) {
+      if (pfs_bruteforce_limits_reached(state))
+        return false;
+
+      pfs_nmount_profile_t np = {
+          .fstype = k_fallback_fstypes[i],
+          .budgetid = DEVPFS_BUDGET_GAME,
+          .mkeymode = DEVPFS_MKEYMODE_GD,
+          .sigverify = 0,
+          .playgo = 0,
+          .disc = 0,
+          .include_ekpfs = false,
+          .key_level = key_level,
+      };
+      int unit_before_attempt = *unit_id_io;
+      if (pfs_try_nmount_profile(state, tuple, &np, unit_id_io, devname,
+                                 devname_size, winner_out)) {
+        return true;
+      }
+
+      if (pfs_bruteforce_limits_reached(state))
+        return false;
+
+      int attach_err = 0;
+      if (!stage_a_attach_tuple(state->file_path, state->file_size, tuple,
+                                unit_id_io, devname, devname_size,
+                                &attach_err)) {
+        count_attach_failure(state, attach_err);
+        return false;
+      }
+      pfs_bruteforce_sleep(state);
+
+      if (unit_before_attempt < 0)
+        break;
+      key_level++;
+    }
+  }
+
+  return false;
+}
+
+static bool pfs_try_attach_pass(pfs_bruteforce_state_t *state,
+                                const pfs_attach_pass_t *pass,
+                                mount_profile_t *winner_out, int *unit_id_out,
+                                char *devname_out, size_t devname_size) {
+  for (size_t i = 0; i < pass->image_type_count; i++) {
+    for (size_t r = 0; r < pass->raw_flag_count; r++) {
+      for (size_t s = 0; s < pass->sector_size_count; s++) {
+        if (pfs_bruteforce_limits_reached(state))
+          return false;
+
+        uint32_t sec = pass->sector_sizes[s];
+        uint32_t sec2 = sec;
+        if (pass->force_secondary_65536) {
+          if (sec == 65536u)
+            continue;
+          sec2 = 65536u;
+        }
+
+        pfs_attach_tuple_t tuple = {
+            .image_type = pass->image_types[i],
+            .raw_flags = pass->raw_flags[r],
+            .normalized_flags = normalize_lvd_raw_flags(pass->raw_flags[r]),
+            .sector_size = sec,
+            .secondary_unit = sec2,
+        };
+
+        int attach_err = 0;
+        int temp_unit = -1;
+        char temp_dev[64];
+        bool ok = stage_a_attach_tuple(state->file_path, state->file_size,
+                                       &tuple, &temp_unit, temp_dev,
+                                       sizeof(temp_dev), &attach_err);
+        g_pfs_global_attempts++;
+        log_debug("  [IMG][BRUTE] stage=A pass=%s idx=%u tuple=(img=%u raw=0x%x flags=0x%x sec=%u sec2=%u) result=%s errno=%d",
+                  pass->label, state->attempt_idx, tuple.image_type,
+                  tuple.raw_flags, tuple.normalized_flags, tuple.sector_size,
+                  tuple.secondary_unit, ok ? "ATTACH_OK" : "ATTACH_FAIL",
+                  attach_err);
+        state->attempt_idx++;
+
+        if (!ok) {
+          count_attach_failure(state, attach_err);
+          pfs_bruteforce_sleep(state);
+          continue;
+        }
+
+        if (pfs_try_attached_tuple_profiles(state, &tuple, &temp_unit,
+                                            temp_dev, sizeof(temp_dev),
+                                            winner_out)) {
+          *unit_id_out = temp_unit;
+          (void)strlcpy(devname_out, temp_dev, devname_size);
+          return true;
+        }
+
+        if (temp_unit >= 0)
+          (void)detach_attached_unit(ATTACH_BACKEND_LVD, temp_unit);
+        pfs_bruteforce_sleep(state);
+      }
+    }
+  }
+
+  return false;
+}
+
 // --- Image Attach + nmount Pipeline ---
 bool mount_image(const char *file_path, image_fs_type_t fs_type) {
   sm_error_clear();
@@ -1051,7 +1386,7 @@ bool mount_image(const char *file_path, image_fs_type_t fs_type) {
             .sigverify = cached_profile.sigverify,
             .playgo = cached_profile.playgo,
             .disc = cached_profile.disc,
-            .include_ekpfs = true,
+          .include_ekpfs = cached_profile.include_ekpfs,
             .key_level = 3,
         };
         if (stage_b_nmount_profile(mount_point, devname, mount_read_only,
@@ -1068,313 +1403,113 @@ bool mount_image(const char *file_path, image_fs_type_t fs_type) {
       }
     }
 
-    // Stage A: attach tuple compatibility search.
-    static const uint16_t k_img_candidates[] = {0, 5, 1, 2, 3, 4, 6, 7};
-    static const uint16_t k_raw_candidates[] = {0x9, 0x8, 0xD, 0xC};
-    static const uint32_t k_sector_candidates[] = {4096, 32768, 65536};
-    pfs_attach_tuple_t stage_a_ok[24];
-    int stage_a_ok_count = 0;
-    uint32_t attempt_idx = 0;
-    time_t start_time = time(NULL);
-    bool limit_logged = false;
-    uint32_t attach_einval_count = 0;
-    uint32_t nmount_einval_count = 0;
-    uint32_t nmount_semantic_count = 0;
-    uint32_t other_fail_count = 0;
+    static const uint16_t k_fast_image_types[] = {0};
+    static const uint16_t k_fast_fallback_image_types[] = {5};
+    static const uint16_t k_secondary_image_types[] = {2, 3, 4, 6};
+    static const uint16_t k_last_resort_image_types[] = {1, 7};
+    static const uint16_t k_primary_raw_flags[] = {0x9, 0x8};
+    static const uint16_t k_last_resort_raw_flags[] = {0xD, 0xC};
+    static const uint16_t k_primary_image_types[] = {0, 5};
+    static const uint32_t k_sector_candidates[] = {65536u, 32768u, 4096u};
+    static const pfs_attach_pass_t k_attach_passes[] = {
+        {.image_types = k_fast_image_types,
+         .image_type_count = sizeof(k_fast_image_types) / sizeof(k_fast_image_types[0]),
+         .raw_flags = k_primary_raw_flags,
+         .raw_flag_count = 1,
+         .sector_sizes = k_sector_candidates,
+         .sector_size_count = sizeof(k_sector_candidates) / sizeof(k_sector_candidates[0]),
+         .force_secondary_65536 = false,
+         .label = "fast-img0"},
+        {.image_types = k_fast_fallback_image_types,
+         .image_type_count = sizeof(k_fast_fallback_image_types) / sizeof(k_fast_fallback_image_types[0]),
+         .raw_flags = k_primary_raw_flags,
+         .raw_flag_count = 1,
+         .sector_sizes = k_sector_candidates,
+         .sector_size_count = sizeof(k_sector_candidates) / sizeof(k_sector_candidates[0]),
+         .force_secondary_65536 = false,
+         .label = "fast-img5"},
+        {.image_types = k_fast_image_types,
+         .image_type_count = sizeof(k_fast_image_types) / sizeof(k_fast_image_types[0]),
+         .raw_flags = &k_primary_raw_flags[1],
+         .raw_flag_count = 1,
+         .sector_sizes = k_sector_candidates,
+         .sector_size_count = sizeof(k_sector_candidates) / sizeof(k_sector_candidates[0]),
+         .force_secondary_65536 = false,
+         .label = "expand-img0"},
+        {.image_types = k_fast_fallback_image_types,
+         .image_type_count = sizeof(k_fast_fallback_image_types) / sizeof(k_fast_fallback_image_types[0]),
+         .raw_flags = &k_primary_raw_flags[1],
+         .raw_flag_count = 1,
+         .sector_sizes = k_sector_candidates,
+         .sector_size_count = sizeof(k_sector_candidates) / sizeof(k_sector_candidates[0]),
+         .force_secondary_65536 = false,
+         .label = "expand-img5"},
+        {.image_types = k_primary_image_types,
+         .image_type_count = sizeof(k_primary_image_types) / sizeof(k_primary_image_types[0]),
+         .raw_flags = k_primary_raw_flags,
+         .raw_flag_count = sizeof(k_primary_raw_flags) / sizeof(k_primary_raw_flags[0]),
+         .sector_sizes = k_sector_candidates,
+         .sector_size_count = sizeof(k_sector_candidates) / sizeof(k_sector_candidates[0]),
+         .force_secondary_65536 = true,
+         .label = "sec2-65536"},
+        {.image_types = k_secondary_image_types,
+         .image_type_count = sizeof(k_secondary_image_types) / sizeof(k_secondary_image_types[0]),
+         .raw_flags = k_primary_raw_flags,
+         .raw_flag_count = sizeof(k_primary_raw_flags) / sizeof(k_primary_raw_flags[0]),
+         .sector_sizes = k_sector_candidates,
+         .sector_size_count = sizeof(k_sector_candidates) / sizeof(k_sector_candidates[0]),
+         .force_secondary_65536 = false,
+         .label = "secondary-images"},
+        {.image_types = k_last_resort_image_types,
+         .image_type_count = sizeof(k_last_resort_image_types) / sizeof(k_last_resort_image_types[0]),
+         .raw_flags = k_primary_raw_flags,
+         .raw_flag_count = sizeof(k_primary_raw_flags) / sizeof(k_primary_raw_flags[0]),
+         .sector_sizes = k_sector_candidates,
+         .sector_size_count = sizeof(k_sector_candidates) / sizeof(k_sector_candidates[0]),
+         .force_secondary_65536 = false,
+         .label = "last-images"},
+        {.image_types = k_primary_image_types,
+         .image_type_count = sizeof(k_primary_image_types) / sizeof(k_primary_image_types[0]),
+         .raw_flags = k_last_resort_raw_flags,
+         .raw_flag_count = sizeof(k_last_resort_raw_flags) / sizeof(k_last_resort_raw_flags[0]),
+         .sector_sizes = k_sector_candidates,
+         .sector_size_count = sizeof(k_sector_candidates) / sizeof(k_sector_candidates[0]),
+         .force_secondary_65536 = false,
+         .label = "last-raws"},
+    };
 
-    for (size_t i = 0; i < sizeof(k_img_candidates) / sizeof(k_img_candidates[0]); i++) {
-      for (size_t r = 0; r < sizeof(k_raw_candidates) / sizeof(k_raw_candidates[0]); r++) {
-        for (size_t s = 0; s < sizeof(k_sector_candidates) / sizeof(k_sector_candidates[0]); s++) {
-          uint32_t sec = k_sector_candidates[s];
-          for (int sec2_mode = 0; sec2_mode < 2; sec2_mode++) {
-            uint32_t sec2 = (sec2_mode == 0) ? sec : 65536u;
-            if (attempt_idx >= cfg->pfs_bruteforce_max_attempts ||
-                (uint32_t)(time(NULL) - start_time) >=
-                    cfg->pfs_bruteforce_max_seconds_per_image ||
-                g_pfs_global_attempts >=
-                    cfg->pfs_bruteforce_max_global_attempts_per_scan) {
-              if (!limit_logged) {
-                log_debug("  [IMG][BRUTE] limits reached: attempts=%u elapsed=%us global=%u",
-                          attempt_idx,
-                          (unsigned)(time(NULL) - start_time),
-                          g_pfs_global_attempts);
-                limit_logged = true;
-              }
-              goto stage_a_done;
-            }
-
-            pfs_attach_tuple_t tuple;
-            tuple.image_type = k_img_candidates[i];
-            tuple.raw_flags = k_raw_candidates[r];
-            tuple.normalized_flags = normalize_lvd_raw_flags(tuple.raw_flags);
-            tuple.sector_size = sec;
-            tuple.secondary_unit = sec2;
-
-            int attach_err = 0;
-            int temp_unit = -1;
-            char temp_dev[64];
-            bool ok = stage_a_attach_tuple(file_path, st.st_size, &tuple, &temp_unit,
-                                           temp_dev, sizeof(temp_dev),
-                                           &attach_err);
-            g_pfs_global_attempts++;
-            log_debug("  [IMG][BRUTE] stage=A idx=%u tuple=(img=%u raw=0x%x flags=0x%x sec=%u sec2=%u) result=%s errno=%d",
-                      attempt_idx,
-                      tuple.image_type, tuple.raw_flags, tuple.normalized_flags,
-                      tuple.sector_size, tuple.secondary_unit,
-                      ok ? "ATTACH_OK" : "ATTACH_FAIL", attach_err);
-            attempt_idx++;
-
-            if (ok) {
-              if (stage_a_ok_count < (int)(sizeof(stage_a_ok) / sizeof(stage_a_ok[0])))
-                stage_a_ok[stage_a_ok_count++] = tuple;
-              (void)detach_attached_unit(ATTACH_BACKEND_LVD, temp_unit);
-            } else if (attach_err == EINVAL) {
-              attach_einval_count++;
-            } else {
-              other_fail_count++;
-            }
-
-            if (cfg->pfs_bruteforce_sleep_ms > 0)
-              sceKernelUsleep(cfg->pfs_bruteforce_sleep_ms * 1000u);
-          }
-        }
-      }
-    }
-stage_a_done:
-
-    // Stage B: nmount option compatibility search using Stage A winners.
     bool mounted = false;
     mount_profile_t winner;
     memset(&winner, 0, sizeof(winner));
-    for (int a = 0; a < stage_a_ok_count && !mounted; a++) {
-      int attach_err = 0;
-      if (!stage_a_attach_tuple(file_path, st.st_size, &stage_a_ok[a], &unit_id,
-                                devname, sizeof(devname), &attach_err)) {
-        continue;
-      }
+    pfs_bruteforce_state_t brute_state = {
+        .cfg = cfg,
+        .file_path = file_path,
+        .fs_type = fs_type,
+        .file_size = st.st_size,
+        .mount_point = mount_point,
+        .mount_read_only = mount_read_only,
+        .force_mount = force_mount,
+        .start_time = time(NULL),
+    };
 
-      static const char *k_fstypes[] = {"pfs", "ppr_pfs", "transaction_pfs"};
-      for (size_t f = 0; f < sizeof(k_fstypes) / sizeof(k_fstypes[0]) && !mounted; f++) {
-        const char *fstype = k_fstypes[f];
-
-        if (strcmp(fstype, "pfs") == 0) {
-          static const char *k_mkeys[] = {DEVPFS_MKEYMODE_SD, DEVPFS_MKEYMODE_GD, DEVPFS_MKEYMODE_AC};
-          static const char *k_budgets[] = {DEVPFS_BUDGET_GAME, DEVPFS_BUDGET_SYSTEM};
-          for (size_t mk = 0; mk < 3 && !mounted; mk++) {
-            for (size_t bd = 0; bd < 2 && !mounted; bd++) {
-              for (int sig = 0; sig < 2 && !mounted; sig++) {
-                for (int pg = 0; pg < 2 && !mounted; pg++) {
-                  for (int dc = 0; dc < 2 && !mounted; dc++) {
-                    for (int ek = 0; ek < 2 && !mounted; ek++) {
-                      if (attempt_idx >= cfg->pfs_bruteforce_max_attempts ||
-                          (uint32_t)(time(NULL) - start_time) >=
-                              cfg->pfs_bruteforce_max_seconds_per_image ||
-                          g_pfs_global_attempts >=
-                              cfg->pfs_bruteforce_max_global_attempts_per_scan) {
-                        if (!limit_logged) {
-                          log_debug("  [IMG][BRUTE] limits reached: attempts=%u elapsed=%us global=%u",
-                                    attempt_idx,
-                                    (unsigned)(time(NULL) - start_time),
-                                    g_pfs_global_attempts);
-                          limit_logged = true;
-                        }
-                        goto stage_b_done;
-                      }
-
-                      pfs_nmount_profile_t np = {
-                          .fstype = fstype,
-                          .budgetid = k_budgets[bd],
-                          .mkeymode = k_mkeys[mk],
-                          .sigverify = (uint8_t)sig,
-                          .playgo = (uint8_t)pg,
-                          .disc = (uint8_t)dc,
-                          .include_ekpfs = (ek == 0),
-                          .key_level = 3,
-                      };
-                      char errmsg[256];
-                      int nmount_err = 0;
-                      bool ok = stage_b_nmount_profile(mount_point, devname,
-                                                       mount_read_only,
-                                                       force_mount, &np, errmsg,
-                                                       sizeof(errmsg),
-                                                       &nmount_err);
-                      g_pfs_global_attempts++;
-                      log_debug("  [IMG][BRUTE] stage=B idx=%u tuple=(img=%u raw=0x%x sec=%u sec2=%u) opts=(fstype=%s budget=%s mkey=%s sig=%u playgo=%u disc=%u ekpfs=%d) result=%s errno=%d",
-                                attempt_idx,
-                                stage_a_ok[a].image_type,
-                                stage_a_ok[a].raw_flags,
-                                stage_a_ok[a].sector_size,
-                                stage_a_ok[a].secondary_unit,
-                                np.fstype, np.budgetid, np.mkeymode,
-                                np.sigverify, np.playgo, np.disc,
-                                np.include_ekpfs ? 1 : 0,
-                                ok ? "NMOUNT_OK" : "NMOUNT_FAIL", nmount_err);
-                      attempt_idx++;
-
-                      if (ok && validate_mounted_image(file_path, fs_type,
-                                                       ATTACH_BACKEND_LVD,
-                                                       unit_id, devname,
-                                                       mount_point)) {
-                        winner.io_version = LVD_ATTACH_IO_VERSION_V0;
-                        winner.image_type = stage_a_ok[a].image_type;
-                        winner.raw_flags = stage_a_ok[a].raw_flags;
-                        winner.normalized_flags = stage_a_ok[a].normalized_flags;
-                        winner.sector_size = stage_a_ok[a].sector_size;
-                        winner.secondary_unit = stage_a_ok[a].secondary_unit;
-                        winner.fstype = np.fstype;
-                        winner.budgetid = np.budgetid;
-                        winner.mkeymode = np.mkeymode;
-                        winner.sigverify = np.sigverify;
-                        winner.playgo = np.playgo;
-                        winner.disc = np.disc;
-                        winner.mount_read_only = mount_read_only;
-                        mounted = true;
-                        break;
-                      }
-
-                      if (ok)
-                        (void)unmount_image(file_path, unit_id, ATTACH_BACKEND_LVD);
-                      else if (nmount_err == EINVAL)
-                        nmount_einval_count++;
-                      else if (nmount_err == EOPNOTSUPP)
-                        nmount_semantic_count++;
-                      else
-                        other_fail_count++;
-
-                      unit_id = -1;
-                      memset(devname, 0, sizeof(devname));
-                      if (!mounted && !stage_a_attach_tuple(file_path, st.st_size,
-                                                            &stage_a_ok[a],
-                                                            &unit_id, devname,
-                                                            sizeof(devname),
-                                                            &attach_err)) {
-                        goto stage_b_next_attach;
-                      }
-                      if (cfg->pfs_bruteforce_sleep_ms > 0)
-                        sceKernelUsleep(cfg->pfs_bruteforce_sleep_ms * 1000u);
-                    }
-                  }
-                }
-              }
-            }
-          }
-        } else {
-          // ppr_pfs/transaction_pfs: start minimal, escalate keys only after EINVAL.
-          uint8_t key_level = 0;
-          while (key_level <= 3 && !mounted) {
-            if (attempt_idx >= cfg->pfs_bruteforce_max_attempts ||
-                (uint32_t)(time(NULL) - start_time) >=
-                    cfg->pfs_bruteforce_max_seconds_per_image ||
-                g_pfs_global_attempts >=
-                    cfg->pfs_bruteforce_max_global_attempts_per_scan) {
-              if (!limit_logged) {
-                log_debug("  [IMG][BRUTE] limits reached: attempts=%u elapsed=%us global=%u",
-                          attempt_idx,
-                          (unsigned)(time(NULL) - start_time),
-                          g_pfs_global_attempts);
-                limit_logged = true;
-              }
-              goto stage_b_done;
-            }
-
-            pfs_nmount_profile_t np = {
-                .fstype = fstype,
-                .budgetid = DEVPFS_BUDGET_GAME,
-                .mkeymode = DEVPFS_MKEYMODE_SD,
-                .sigverify = 0,
-                .playgo = 0,
-                .disc = 0,
-                .include_ekpfs = false,
-                .key_level = key_level,
-            };
-            char errmsg[256];
-            int nmount_err = 0;
-            bool ok = stage_b_nmount_profile(mount_point, devname,
-                                             mount_read_only, force_mount,
-                                             &np, errmsg, sizeof(errmsg),
-                                             &nmount_err);
-            g_pfs_global_attempts++;
-            log_debug("  [IMG][BRUTE] stage=B idx=%u tuple=(img=%u raw=0x%x sec=%u sec2=%u) opts=(fstype=%s level=%u) result=%s errno=%d",
-                      attempt_idx,
-                      stage_a_ok[a].image_type,
-                      stage_a_ok[a].raw_flags,
-                      stage_a_ok[a].sector_size,
-                      stage_a_ok[a].secondary_unit,
-                      fstype, (unsigned)key_level,
-                      ok ? "NMOUNT_OK" : "NMOUNT_FAIL", nmount_err);
-            attempt_idx++;
-
-            if (ok && validate_mounted_image(file_path, fs_type,
-                                             ATTACH_BACKEND_LVD, unit_id,
-                                             devname, mount_point)) {
-              winner.io_version = LVD_ATTACH_IO_VERSION_V0;
-              winner.image_type = stage_a_ok[a].image_type;
-              winner.raw_flags = stage_a_ok[a].raw_flags;
-              winner.normalized_flags = stage_a_ok[a].normalized_flags;
-              winner.sector_size = stage_a_ok[a].sector_size;
-              winner.secondary_unit = stage_a_ok[a].secondary_unit;
-              winner.fstype = fstype;
-              winner.budgetid = np.budgetid;
-              winner.mkeymode = np.mkeymode;
-              winner.sigverify = np.sigverify;
-              winner.playgo = np.playgo;
-              winner.disc = np.disc;
-              winner.mount_read_only = mount_read_only;
-              mounted = true;
-              break;
-            }
-
-            if (ok)
-              (void)unmount_image(file_path, unit_id, ATTACH_BACKEND_LVD);
-            else if (nmount_err == EINVAL)
-              nmount_einval_count++;
-            else if (nmount_err == EOPNOTSUPP)
-              nmount_semantic_count++;
-            else
-              other_fail_count++;
-
-            unit_id = -1;
-            memset(devname, 0, sizeof(devname));
-            if (!mounted && !stage_a_attach_tuple(file_path, st.st_size,
-                                                  &stage_a_ok[a], &unit_id,
-                                                  devname, sizeof(devname),
-                                                  &attach_err)) {
-              break;
-            }
-
-            if (nmount_err == EINVAL && key_level < 3)
-              key_level++;
-            else
-              break;
-
-            if (cfg->pfs_bruteforce_sleep_ms > 0)
-              sceKernelUsleep(cfg->pfs_bruteforce_sleep_ms * 1000u);
-          }
-        }
-      }
-
-stage_b_next_attach:
-      if (!mounted && unit_id >= 0)
-        (void)detach_attached_unit(ATTACH_BACKEND_LVD, unit_id);
-      unit_id = -1;
-      memset(devname, 0, sizeof(devname));
-    }
-
-stage_b_done:
-    if (!mounted && unit_id >= 0) {
-      (void)detach_attached_unit(ATTACH_BACKEND_LVD, unit_id);
-      unit_id = -1;
-      memset(devname, 0, sizeof(devname));
+    for (size_t pass_idx = 0;
+         pass_idx < sizeof(k_attach_passes) / sizeof(k_attach_passes[0]) &&
+         !mounted;
+         pass_idx++) {
+      mounted = pfs_try_attach_pass(&brute_state, &k_attach_passes[pass_idx],
+                                    &winner, &unit_id, devname,
+                                    sizeof(devname));
     }
 
     if (mounted) {
       (void)cache_mount_profile(filename_local, &winner);
-      log_debug("  [IMG][BRUTE] winner selected: img=%u raw=0x%x flags=0x%x sec=%u sec2=%u fstype=%s budget=%s mkey=%s",
+      log_debug("  [IMG][BRUTE] winner selected: img=%u raw=0x%x flags=0x%x sec=%u sec2=%u fstype=%s budget=%s mkey=%s ekpfs=%u",
                 winner.image_type, winner.raw_flags, winner.normalized_flags,
                 winner.sector_size, winner.secondary_unit,
                 winner.fstype ? winner.fstype : "pfs",
                 winner.budgetid ? winner.budgetid : DEVPFS_BUDGET_GAME,
-                winner.mkeymode ? winner.mkeymode : DEVPFS_MKEYMODE_SD);
+                winner.mkeymode ? winner.mkeymode : DEVPFS_MKEYMODE_SD,
+                winner.include_ekpfs ? 1u : 0u);
       notify_system_info("PFS mounted:\n%s", file_path);
       attach_backend = ATTACH_BACKEND_LVD;
       goto mount_success;
@@ -1382,8 +1517,9 @@ stage_b_done:
 
     set_pfs_cooldown(file_path, cfg->pfs_bruteforce_cooldown_seconds);
     log_debug("  [IMG][BRUTE] exhausted summary: attach_e22=%u nmount_e22=%u nmount_e96=%u other=%u attempts=%u",
-              attach_einval_count, nmount_einval_count,
-              nmount_semantic_count, other_fail_count, attempt_idx);
+              brute_state.attach_einval_count, brute_state.nmount_einval_count,
+              brute_state.nmount_semantic_count, brute_state.other_fail_count,
+              brute_state.attempt_idx);
     log_debug("  [IMG][BRUTE] all profiles failed, moving to next image");
     return false;
   }

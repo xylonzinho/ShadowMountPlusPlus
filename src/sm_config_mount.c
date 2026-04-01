@@ -259,14 +259,14 @@ static void init_runtime_config_defaults(runtime_config_state_t *state) {
   state->cfg.md_sector_zfs = MD_SECTOR_SIZE_ZFS;
   // Adaptive mount strategy (brute-force) defaults
   state->cfg.pfs_bruteforce_enabled = true;
-  state->cfg.pfs_bruteforce_sleep_ms = 3000u;
+  state->cfg.pfs_bruteforce_sleep_ms = 200u;
   state->cfg.pfs_bruteforce_max_attempts = 20u;
   state->cfg.pfs_bruteforce_max_seconds_per_image = 60u;
   state->cfg.pfs_bruteforce_cooldown_seconds = 300u;
   state->cfg.pfs_bruteforce_max_global_attempts_per_scan = 200u;
-  (void)strlcpy(state->cfg.pfs_bruteforce_sector_sizes, "4096,32768,65536",
+  (void)strlcpy(state->cfg.pfs_bruteforce_sector_sizes, "65536,32768,4096",
                 sizeof(state->cfg.pfs_bruteforce_sector_sizes));
-  (void)strlcpy(state->cfg.pfs_bruteforce_image_types, "0,5,1,2,3,4,6,7",
+  (void)strlcpy(state->cfg.pfs_bruteforce_image_types, "0,5,2,3,4,6,1,7",
                 sizeof(state->cfg.pfs_bruteforce_image_types));
   (void)strlcpy(state->cfg.pfs_bruteforce_raw_flags, "0x9,0x8,0xD,0xC",
                 sizeof(state->cfg.pfs_bruteforce_raw_flags));

@@ -118,11 +118,13 @@ void format_profile_for_cache(const mount_profile_t *profile,
     return;
 
   snprintf(buf, buf_size,
-           "v0:%u:%u:0x%x:0x%x:%u:%s:%s:%s:%u:%u:%u:%d",
-           profile->image_type, profile->raw_flags, profile->raw_flags,
-           profile->normalized_flags, profile->sector_size, profile->fstype,
-           profile->budgetid, profile->mkeymode, profile->sigverify,
-           profile->playgo, profile->disc, profile->mount_read_only ? 1 : 0);
+           "v1:%u:0x%x:0x%x:%u:%u:%s:%s:%s:%u:%u:%u:%u:%d",
+           profile->image_type, profile->raw_flags,
+           profile->normalized_flags, profile->sector_size,
+           profile->secondary_unit, profile->fstype, profile->budgetid,
+           profile->mkeymode, profile->sigverify, profile->playgo,
+           profile->disc, profile->include_ekpfs ? 1u : 0u,
+           profile->mount_read_only ? 1 : 0);
 }
 
 bool parse_profile_from_cache(const char *cached_str,
@@ -141,7 +143,12 @@ bool parse_profile_from_cache(const char *cached_str,
 
   // Version
   token = strtok_r(buf, ":", &saveptr);
-  if (!token || strcmp(token, "v0") != 0)
+  if (!token)
+    return false;
+
+  bool is_v1 = (strcmp(token, "v1") == 0);
+  bool is_v0 = (strcmp(token, "v0") == 0);
+  if (!is_v1 && !is_v0)
     return false;
 
   // image_type
@@ -150,28 +157,51 @@ bool parse_profile_from_cache(const char *cached_str,
     return false;
   profile_out->image_type = (uint16_t)strtoul(token, NULL, 10);
 
-  // raw_flags
-  token = strtok_r(NULL, ":", &saveptr);
-  if (!token)
-    return false;
-  profile_out->raw_flags = (uint16_t)strtoul(token, NULL, 10);
+  if (is_v1) {
+    token = strtok_r(NULL, ":", &saveptr);
+    if (!token)
+      return false;
+    profile_out->raw_flags = (uint16_t)strtoul(token, NULL, 0);
 
-  // Skip stored raw_flags (redundant)
-  token = strtok_r(NULL, ":", &saveptr);
-  if (!token)
-    return false;
+    token = strtok_r(NULL, ":", &saveptr);
+    if (!token)
+      return false;
+    profile_out->normalized_flags = (uint16_t)strtoul(token, NULL, 0);
 
-  // normalized_flags
-  token = strtok_r(NULL, ":", &saveptr);
-  if (!token)
-    return false;
-  profile_out->normalized_flags = (uint16_t)strtoul(token, NULL, 16);
+    token = strtok_r(NULL, ":", &saveptr);
+    if (!token)
+      return false;
+    profile_out->sector_size = (uint32_t)strtoul(token, NULL, 10);
 
-  // sector_size
-  token = strtok_r(NULL, ":", &saveptr);
-  if (!token)
-    return false;
-  profile_out->sector_size = (uint32_t)strtoul(token, NULL, 10);
+    token = strtok_r(NULL, ":", &saveptr);
+    if (!token)
+      return false;
+    profile_out->secondary_unit = (uint32_t)strtoul(token, NULL, 10);
+  } else {
+    // raw_flags
+    token = strtok_r(NULL, ":", &saveptr);
+    if (!token)
+      return false;
+    profile_out->raw_flags = (uint16_t)strtoul(token, NULL, 10);
+
+    // Skip stored raw_flags (redundant)
+    token = strtok_r(NULL, ":", &saveptr);
+    if (!token)
+      return false;
+
+    // normalized_flags
+    token = strtok_r(NULL, ":", &saveptr);
+    if (!token)
+      return false;
+    profile_out->normalized_flags = (uint16_t)strtoul(token, NULL, 16);
+
+    // sector_size
+    token = strtok_r(NULL, ":", &saveptr);
+    if (!token)
+      return false;
+    profile_out->sector_size = (uint32_t)strtoul(token, NULL, 10);
+    profile_out->secondary_unit = profile_out->sector_size;
+  }
 
   // fstype
   token = strtok_r(NULL, ":", &saveptr);
@@ -232,6 +262,15 @@ bool parse_profile_from_cache(const char *cached_str,
     return false;
   profile_out->disc = (uint8_t)strtoul(token, NULL, 10);
 
+  if (is_v1) {
+    token = strtok_r(NULL, ":", &saveptr);
+    if (!token)
+      return false;
+    profile_out->include_ekpfs = ((uint32_t)strtoul(token, NULL, 10) != 0);
+  } else {
+    profile_out->include_ekpfs = true;
+  }
+
   // mount_read_only
   token = strtok_r(NULL, ":", &saveptr);
   if (!token)
@@ -239,7 +278,6 @@ bool parse_profile_from_cache(const char *cached_str,
   profile_out->mount_read_only = ((uint32_t)strtoul(token, NULL, 10) != 0);
 
   profile_out->io_version = LVD_ATTACH_IO_VERSION_V0;
-  profile_out->secondary_unit = profile_out->sector_size;
   profile_out->label = "cached";
 
   return true;
