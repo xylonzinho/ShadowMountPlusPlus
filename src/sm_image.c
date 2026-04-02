@@ -1875,6 +1875,8 @@ bool mount_image(const char *file_path, image_fs_type_t fs_type) {
         (void)unmount_image(file_path, unit_id, ATTACH_BACKEND_LVD);
         unit_id = -1;
         memset(devname, 0, sizeof(devname));
+        // unmount_image() may remove mount_point; restore it for fallback flow.
+        ensure_mount_dirs(mount_point);
       }
     }
   }
