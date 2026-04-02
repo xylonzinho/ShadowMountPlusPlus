@@ -100,7 +100,7 @@ static bool register_title(const char *src_path, const char *title_id,
   if (res == 0) {
     invalidate_app_db_title_cache();
     log_debug("  [REG] Installed NEW!");
-    notify_system_info("Installed: %s (%s)", title_name, title_id);
+    notify_system_info("Installed: %s", title_id);
     if (has_src_snd0) {
       int snd0_updates = update_snd0info(title_id);
       if (snd0_updates >= 0)
@@ -272,8 +272,7 @@ void process_scan_candidates(const scan_candidate_t *candidates,
       log_debug("  [ACTION] Remounting: %s", c->title_name);
     } else {
       log_debug("  [ACTION] Installing: %s (%s)", c->title_name, c->title_id);
-      notify_system_info("Installing: %s (%s)...", c->title_name,
-                         c->title_id);
+      notify_system_info("Installing: %s...", c->title_id);
     }
 
     if (mount_and_install(c->path, c->title_id, c->title_name, c->installed,
