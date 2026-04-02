@@ -82,6 +82,38 @@ static bool copy_sce_sys_to_appmeta(const char *src_sce_sys,
   return ok;
 }
 
+static bool is_supported_install_title_id(const char *title_id) {
+  return (strncmp(title_id, "PPSA", 4) == 0 || strncmp(title_id, "CUSA", 4) == 0);
+}
+
+static bool validate_install_source(const char *src_path, const char *title_id) {
+  char src_eboot[MAX_PATH];
+  char src_param_json[MAX_PATH];
+  char src_param_sfo[MAX_PATH];
+
+  if (!is_supported_install_title_id(title_id)) {
+    log_debug("  [REG] unsupported title id for install: %s", title_id);
+    return false;
+  }
+
+  snprintf(src_eboot, sizeof(src_eboot), "%s/eboot.bin", src_path);
+  snprintf(src_param_json, sizeof(src_param_json), "%s/sce_sys/param.json", src_path);
+  snprintf(src_param_sfo, sizeof(src_param_sfo), "%s/sce_sys/param.sfo", src_path);
+
+  if (!path_exists(src_eboot)) {
+    log_debug("  [REG] missing source eboot.bin: %s", src_eboot);
+    return false;
+  }
+
+  if (!path_exists(src_param_json) && !path_exists(src_param_sfo)) {
+    log_debug("  [REG] missing source param metadata: %s or %s",
+              src_param_json, src_param_sfo);
+    return false;
+  }
+
+  return true;
+}
+
 static bool register_title(const char *src_path, const char *title_id,
                            const char *title_name, bool metadata_restaged,
                            bool has_src_snd0) {
@@ -147,6 +179,11 @@ static bool mount_and_install(const char *src_path, const char *title_id,
   snprintf(user_appmeta_dir, sizeof(user_appmeta_dir), "%s/%s", APPMETA_BASE,
            title_id);
   snprintf(user_app_dir, sizeof(user_app_dir), "%s/%s", APP_BASE, title_id);
+
+  if (!validate_install_source(src_path, title_id)) {
+    notify_system("Install source invalid: %s", title_id);
+    return false;
+  }
 
   if (image_mount_source) {
     has_image_source = resolve_image_source_from_mount_cache(
@@ -252,6 +289,8 @@ static bool mount_and_install(const char *src_path, const char *title_id,
   }
 
   // REGISTER
+  // Give shell/runtime a brief settle window after nullfs mount before install API.
+  sceKernelUsleep(300000);
   if (!register_title(src_path, title_id, title_name, metadata_restaged,
                       has_src_snd0)) {
     return false;
@@ -272,7 +311,6 @@ void process_scan_candidates(const scan_candidate_t *candidates,
       log_debug("  [ACTION] Remounting: %s", c->title_name);
     } else {
       log_debug("  [ACTION] Installing: %s (%s)", c->title_name, c->title_id);
-      notify_system_info("Installing: %s...", c->title_id);
     }
 
     if (mount_and_install(c->path, c->title_id, c->title_name, c->installed,
