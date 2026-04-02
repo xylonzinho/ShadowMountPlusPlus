@@ -941,6 +941,51 @@ static bool stage_b_nmount_profile(const char *mount_point, const char *devname,
   if (mount_errmsg && errmsg_size > 0)
     mount_errmsg[0] = '\0';
 
+  // Keep mount paths/devnodes valid across retries so ENOENT is actionable.
+  if (!devname || devname[0] == '\0' || !path_exists(devname)) {
+    if (errno_out)
+      *errno_out = ENOENT;
+    if (mount_errmsg && errmsg_size > 0) {
+      (void)snprintf(mount_errmsg, errmsg_size, "missing source device: %s",
+                     (devname && devname[0] != '\0') ? devname : "<empty>");
+    }
+    errno = ENOENT;
+    return false;
+  }
+
+  if (!mount_point || mount_point[0] == '\0') {
+    if (errno_out)
+      *errno_out = ENOENT;
+    if (mount_errmsg && errmsg_size > 0)
+      (void)snprintf(mount_errmsg, errmsg_size, "missing mount point");
+    errno = ENOENT;
+    return false;
+  }
+
+  if (mkdir(IMAGE_MOUNT_BASE, 0777) != 0 && errno != EEXIST) {
+    int mkerr = errno;
+    if (errno_out)
+      *errno_out = mkerr;
+    if (mount_errmsg && errmsg_size > 0)
+      (void)snprintf(mount_errmsg, errmsg_size,
+                     "mkdir failed for %s: %s", IMAGE_MOUNT_BASE,
+                     strerror(mkerr));
+    errno = mkerr;
+    return false;
+  }
+
+  if (mkdir(mount_point, 0777) != 0 && errno != EEXIST) {
+    int mkerr = errno;
+    if (errno_out)
+      *errno_out = mkerr;
+    if (mount_errmsg && errmsg_size > 0)
+      (void)snprintf(mount_errmsg, errmsg_size,
+                     "mkdir failed for %s: %s", mount_point,
+                     strerror(mkerr));
+    errno = mkerr;
+    return false;
+  }
+
   struct iovec iov[48];
   unsigned int iovlen = 0;
 
@@ -1109,6 +1154,7 @@ static bool pfs_try_nmount_profile(pfs_bruteforce_state_t *state,
                                    size_t devname_size,
                                    mount_profile_t *winner_out) {
   bool include_noatime = np->supports_noatime;
+  bool suppress_nmount_count = false;
   char errmsg[256];
   int nmount_err = 0;
   bool ok = stage_b_nmount_profile(state->mount_point, devname,
@@ -1152,6 +1198,78 @@ static bool pfs_try_nmount_profile(pfs_bruteforce_state_t *state,
     include_noatime = false;
   }
 
+  if (!ok && nmount_err == ENOENT) {
+    int reattach_err = 0;
+    if (*unit_id_io >= 0)
+      (void)detach_attached_unit(ATTACH_BACKEND_LVD, *unit_id_io);
+    *unit_id_io = -1;
+    if (devname_size > 0)
+      devname[0] = '\0';
+
+    bool reattached = stage_a_attach_tuple(state->file_path, state->file_size,
+                                           tuple, unit_id_io, devname,
+                                           devname_size, &reattach_err);
+    g_pfs_global_attempts++;
+    log_debug("  [IMG][BRUTE] stage=A idx=%u retry=(reattach-after-enoent) tuple=(img=%u raw=0x%x flags=0x%x sec=%u sec2=%u) result=%s errno=%d(%s)",
+              state->attempt_idx, tuple->image_type, tuple->raw_flags,
+              tuple->normalized_flags, tuple->sector_size,
+              tuple->secondary_unit, reattached ? "ATTACH_OK" : "ATTACH_FAIL",
+              reattach_err, errno_name_short(reattach_err));
+    state->attempt_idx++;
+
+    if (!reattached) {
+      count_attach_failure(state, reattach_err);
+      suppress_nmount_count = true;
+    } else {
+      int retry_err = 0;
+      bool retry_ok = stage_b_nmount_profile(state->mount_point, devname,
+                                             state->mount_read_only,
+                                             state->force_mount, np,
+                                             include_noatime, errmsg,
+                                             sizeof(errmsg), &retry_err);
+      g_pfs_global_attempts++;
+      log_debug("  [IMG][BRUTE] stage=B idx=%u retry=(reattach-after-enoent) tuple=(img=%u raw=0x%x sec=%u sec2=%u) opts=(fstype=%s budget=%s mkey=%s sig=%u playgo=%u disc=%u ekpfs=%d noatime=%d) result=%s errno=%d(%s)%s%s",
+                state->attempt_idx, tuple->image_type, tuple->raw_flags,
+                tuple->sector_size, tuple->secondary_unit, np->fstype,
+                np->budgetid ? np->budgetid : "-",
+                np->mkeymode ? np->mkeymode : "-", np->sigverify,
+                np->playgo, np->disc, np->include_ekpfs ? 1 : 0,
+                include_noatime ? 1 : 0,
+                retry_ok ? "NMOUNT_OK" : "NMOUNT_FAIL", retry_err,
+                errno_name_short(retry_err),
+                (!retry_ok && errmsg[0]) ? " msg=" : "",
+                (!retry_ok && errmsg[0]) ? errmsg : "");
+      state->attempt_idx++;
+
+      ok = retry_ok;
+      nmount_err = retry_err;
+
+      if (!ok && nmount_err == EINVAL && include_noatime) {
+        int drop_noatime_err = 0;
+        bool drop_noatime_ok = stage_b_nmount_profile(
+            state->mount_point, devname, state->mount_read_only,
+            state->force_mount, np, false, errmsg, sizeof(errmsg),
+            &drop_noatime_err);
+        g_pfs_global_attempts++;
+        log_debug("  [IMG][BRUTE] stage=B idx=%u retry=(drop-noatime-after-enoent) tuple=(img=%u raw=0x%x sec=%u sec2=%u) opts=(fstype=%s budget=%s mkey=%s sig=%u playgo=%u disc=%u ekpfs=%d noatime=0) result=%s errno=%d(%s)%s%s",
+                  state->attempt_idx, tuple->image_type, tuple->raw_flags,
+                  tuple->sector_size, tuple->secondary_unit, np->fstype,
+                  np->budgetid ? np->budgetid : "-",
+                  np->mkeymode ? np->mkeymode : "-", np->sigverify,
+                  np->playgo, np->disc, np->include_ekpfs ? 1 : 0,
+                  drop_noatime_ok ? "NMOUNT_OK" : "NMOUNT_FAIL",
+                  drop_noatime_err, errno_name_short(drop_noatime_err),
+                  (!drop_noatime_ok && errmsg[0]) ? " msg=" : "",
+                  (!drop_noatime_ok && errmsg[0]) ? errmsg : "");
+        state->attempt_idx++;
+
+        ok = drop_noatime_ok;
+        nmount_err = drop_noatime_err;
+        include_noatime = false;
+      }
+    }
+  }
+
   if (ok && validate_mounted_image(state->file_path, state->fs_type,
                                    ATTACH_BACKEND_LVD, *unit_id_io, devname,
                                    state->mount_point)) {
@@ -1163,7 +1281,7 @@ static bool pfs_try_nmount_profile(pfs_bruteforce_state_t *state,
 
   if (ok)
     (void)unmount_image(state->file_path, *unit_id_io, ATTACH_BACKEND_LVD);
-  else
+  else if (!suppress_nmount_count)
     count_nmount_failure(state, nmount_err);
 
   if (*unit_id_io >= 0)
