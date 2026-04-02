@@ -595,6 +595,7 @@ static bool perform_image_nmount(const char *file_path, image_fs_type_t fs_type,
   const char *sigverify = PFS_MOUNT_SIGVERIFY ? "1" : "0";
   const char *playgo = PFS_MOUNT_PLAYGO ? "1" : "0";
   const char *disc = PFS_MOUNT_DISC ? "1" : "0";
+  const char *ekpfs_key = PFS_ZERO_EKPFS_KEY_HEX;
 
   struct iovec iov_ufs[] = {
       IOVEC_ENTRY("fstype"),     IOVEC_ENTRY("ufs"), IOVEC_ENTRY("from"),
@@ -630,6 +631,7 @@ static bool perform_image_nmount(const char *file_path, image_fs_type_t fs_type,
       IOVEC_ENTRY("budgetid"),   IOVEC_ENTRY(PFS_MOUNT_BUDGET_ID),
       IOVEC_ENTRY("playgo"),     IOVEC_ENTRY(playgo),
       IOVEC_ENTRY("disc"),       IOVEC_ENTRY(disc),
+      IOVEC_ENTRY("ekpfs"),      IOVEC_ENTRY(ekpfs_key),
       IOVEC_ENTRY("async"),      IOVEC_ENTRY(NULL),
       IOVEC_ENTRY("noatime"),    IOVEC_ENTRY(NULL),
       IOVEC_ENTRY("automounted"), IOVEC_ENTRY(NULL),
@@ -671,7 +673,7 @@ static bool perform_image_nmount(const char *file_path, image_fs_type_t fs_type,
       memset(mount_errmsg, 0, sizeof(mount_errmsg));
       log_debug("  [IMG][%s] PFS ro=%d budgetid=%s mkeymode=%s "
             "attempt_mkeymode=%s sigverify=%s playgo=%s disc=%s "
-        "ekpfs=unset",
+        "ekpfs=zero",
             attach_backend_name(attach_backend), mount_read_only ? 1 : 0,
             PFS_MOUNT_BUDGET_ID, PFS_MOUNT_MKEYMODE, pfs_mkeymodes[mi],
             sigverify, playgo, disc);
