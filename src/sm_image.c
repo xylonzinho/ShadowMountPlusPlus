@@ -672,10 +672,11 @@ static bool perform_image_nmount(const char *file_path, image_fs_type_t fs_type,
       iov_pfs[9].iov_len  = strlen(pfs_mkeymodes[mi]) + 1;
       memset(mount_errmsg, 0, sizeof(mount_errmsg));
       log_debug("  [IMG][%s] PFS ro=%d budgetid=%s mkeymode=%s "
-                "sigverify=%s playgo=%s disc=%s ekpfs=zero",
-                attach_backend_name(attach_backend), mount_read_only ? 1 : 0,
-                PFS_MOUNT_BUDGET_ID, pfs_mkeymodes[mi], sigverify, playgo,
-                disc);
+            "attempt_mkeymode=%s sigverify=%s playgo=%s disc=%s "
+            "ekpfs=zero",
+            attach_backend_name(attach_backend), mount_read_only ? 1 : 0,
+            PFS_MOUNT_BUDGET_ID, PFS_MOUNT_MKEYMODE, pfs_mkeymodes[mi],
+            sigverify, playgo, disc);
       if (nmount(iov, iovlen, (int)mount_flags) == 0)
         return true;
       pfs_mount_errno = errno;
