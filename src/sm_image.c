@@ -41,6 +41,13 @@ static uint32_t get_image_sector_size_override_or_default(
 static uint32_t get_lvd_sector_size(const char *path, image_fs_type_t fs_type) {
   uint32_t fallback = get_image_sector_size_override_or_default(
       path, get_lvd_sector_size_fallback(fs_type));
+  // PFS sector size is determined by the image content, not the hosting
+  // filesystem. Skipping the statfs-based reduction prevents the hosting
+  // filesystem's cluster size (e.g. 512-byte exfat on an external drive)
+  // from being used as the LVD sector size, which would force 8x more small
+  // I/O operations per PFS block and cause severely degraded read performance.
+  if (fs_type == IMAGE_FS_PFS)
+    return fallback;
   struct statfs sfs;
   if (statfs(path, &sfs) != 0)
     return fallback;
