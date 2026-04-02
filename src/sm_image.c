@@ -1834,84 +1834,120 @@ bool mount_image(const char *file_path, image_fs_type_t fs_type) {
           .sector_size = cached_profile.sector_size,
           .secondary_unit = cached_profile.secondary_unit,
       };
+      pfs_attach_tuple_t runtime_tuple = {
+          .image_type = get_lvd_image_type(fs_type),
+          .raw_flags = get_lvd_attach_raw_flags(fs_type, mount_read_only),
+          .normalized_flags =
+              normalize_lvd_raw_flags(get_lvd_attach_raw_flags(fs_type,
+                                                               mount_read_only)),
+          .sector_size = get_lvd_sector_size(file_path, fs_type),
+          .secondary_unit = get_lvd_secondary_unit(file_path, fs_type),
+      };
+
+      pfs_attach_tuple_t tuple_candidates[2];
+      int tuple_count = 0;
+      tuple_candidates[tuple_count++] = cached_tuple;
+      if (cached_tuple.image_type != runtime_tuple.image_type ||
+          cached_tuple.raw_flags != runtime_tuple.raw_flags ||
+          cached_tuple.normalized_flags != runtime_tuple.normalized_flags ||
+          cached_tuple.sector_size != runtime_tuple.sector_size ||
+          cached_tuple.secondary_unit != runtime_tuple.secondary_unit) {
+        tuple_candidates[tuple_count++] = runtime_tuple;
+      }
 
       // Pass 0: use ekpfs as stored in profile.
       // Pass 1: retry without ekpfs if pass 0 mounted but root was unreadable
       //         (wrong zero key causes opendir to fail on encrypted PFS).
-      int ekpfs_passes = cached_profile.include_ekpfs ? 2 : 1;
-      for (int ekpfs_pass = 0; ekpfs_pass < ekpfs_passes; ekpfs_pass++) {
-        int cached_err = 0;
-        if (!stage_a_attach_tuple(file_path, st.st_size, &cached_tuple, &unit_id,
-                                  devname, sizeof(devname), &cached_err)) {
-          log_debug("  [IMG][PFS] cached stage-A failed: %s err=%d",
-                    filename_local, cached_err);
-          break;
-        }
-
-        char cached_errmsg[256];
-        int nmount_err = 0;
-        pfs_nmount_profile_t cp = {
-            .fstype = cached_profile.fstype ? cached_profile.fstype : "pfs",
-            .budgetid = cached_profile.budgetid ? cached_profile.budgetid : DEVPFS_BUDGET_GAME,
-            .mkeymode = cached_profile.mkeymode ? cached_profile.mkeymode : DEVPFS_MKEYMODE_GD,
-            .sigverify = cached_profile.sigverify,
-            .playgo = cached_profile.playgo,
-            .disc = cached_profile.disc,
-            .include_ekpfs = (ekpfs_pass == 0) ? cached_profile.include_ekpfs : false,
-            .supports_noatime = cached_profile.supports_noatime,
-            .key_level = 3,
-        };
-        bool cached_ok = stage_b_nmount_profile(
-            mount_point, devname, mount_read_only, force_mount, &cp,
-            cp.supports_noatime, cached_errmsg, sizeof(cached_errmsg),
-            &nmount_err);
-        bool cached_used_noatime = cp.supports_noatime;
-        if (!cached_ok && nmount_err == EINVAL && cached_used_noatime) {
-          cached_ok = stage_b_nmount_profile(
-              mount_point, devname, mount_read_only, force_mount, &cp, false,
-              cached_errmsg, sizeof(cached_errmsg), &nmount_err);
-          cached_used_noatime = false;
-        }
-
-        log_debug("  [IMG][PFS] cached stage-B pass=%d ekpfs=%d result=%s errno=%d%s%s",
-                  ekpfs_pass, cp.include_ekpfs ? 1 : 0,
-                  cached_ok ? "OK" : "FAIL", nmount_err,
-                  (cached_errmsg[0]) ? " msg=" : "",
-                  (cached_errmsg[0]) ? cached_errmsg : "");
-
-        if (cached_ok && validate_mounted_image(file_path, fs_type,
-                                                ATTACH_BACKEND_LVD, unit_id,
-                                                devname, mount_point)) {
-          bool profile_changed = false;
-          if (ekpfs_pass > 0 && cached_profile.include_ekpfs) {
-            cached_profile.include_ekpfs = false;
-            profile_changed = true;
+      for (int tuple_pass = 0; tuple_pass < tuple_count; tuple_pass++) {
+        const pfs_attach_tuple_t *tuple = &tuple_candidates[tuple_pass];
+        int ekpfs_passes = cached_profile.include_ekpfs ? 2 : 1;
+        for (int ekpfs_pass = 0; ekpfs_pass < ekpfs_passes; ekpfs_pass++) {
+          int cached_err = 0;
+          if (!stage_a_attach_tuple(file_path, st.st_size, tuple, &unit_id,
+                                    devname, sizeof(devname), &cached_err)) {
+            log_debug("  [IMG][PFS] cached stage-A failed: %s tuple_pass=%d img=%u raw=0x%x sec=%u sec2=%u err=%d",
+                      filename_local, tuple_pass, tuple->image_type,
+                      tuple->raw_flags, tuple->sector_size,
+                      tuple->secondary_unit, cached_err);
+            break;
           }
-          if (cached_profile.supports_noatime != cached_used_noatime) {
-            cached_profile.supports_noatime = cached_used_noatime;
-            profile_changed = true;
-          }
-          if (profile_changed)
-            (void)cache_mount_profile(filename_local, &cached_profile);
-          log_debug("  [IMG][PFS] cached profile mounted: %s (pass=%d ekpfs=%d noatime=%d)",
-                    file_path, ekpfs_pass, cp.include_ekpfs ? 1 : 0,
-                    cached_used_noatime ? 1 : 0);
-          goto mount_success;
-        }
 
-        // If mount happened (cached_ok) but validate failed, validate already
-        // called unmount_image internally; calling it again is safe (no-op).
-        // If mount never happened (cached_ok=false), only detach the LVD unit
-        // to avoid accidentally cleaning up unrelated stale mounts.
-        if (cached_ok) {
-          (void)unmount_image(file_path, unit_id, ATTACH_BACKEND_LVD);
-        } else if (unit_id >= 0) {
-          (void)detach_attached_unit(ATTACH_BACKEND_LVD, unit_id);
+          char cached_errmsg[256];
+          int nmount_err = 0;
+          pfs_nmount_profile_t cp = {
+              .fstype = cached_profile.fstype ? cached_profile.fstype : "pfs",
+              .budgetid = cached_profile.budgetid ? cached_profile.budgetid : DEVPFS_BUDGET_GAME,
+              .mkeymode = cached_profile.mkeymode ? cached_profile.mkeymode : DEVPFS_MKEYMODE_GD,
+              .sigverify = cached_profile.sigverify,
+              .playgo = cached_profile.playgo,
+              .disc = cached_profile.disc,
+              .include_ekpfs = (ekpfs_pass == 0) ? cached_profile.include_ekpfs : false,
+              .supports_noatime = cached_profile.supports_noatime,
+              .key_level = 3,
+          };
+          bool cached_ok = stage_b_nmount_profile(
+              mount_point, devname, mount_read_only, force_mount, &cp,
+              cp.supports_noatime, cached_errmsg, sizeof(cached_errmsg),
+              &nmount_err);
+          bool cached_used_noatime = cp.supports_noatime;
+          if (!cached_ok && nmount_err == EINVAL && cached_used_noatime) {
+            cached_ok = stage_b_nmount_profile(
+                mount_point, devname, mount_read_only, force_mount, &cp,
+                false, cached_errmsg, sizeof(cached_errmsg), &nmount_err);
+            cached_used_noatime = false;
+          }
+
+          log_debug("  [IMG][PFS] cached stage-B tuple_pass=%d pass=%d tuple=(img=%u raw=0x%x sec=%u sec2=%u) ekpfs=%d result=%s errno=%d%s%s",
+                    tuple_pass, ekpfs_pass, tuple->image_type,
+                    tuple->raw_flags, tuple->sector_size,
+                    tuple->secondary_unit, cp.include_ekpfs ? 1 : 0,
+                    cached_ok ? "OK" : "FAIL", nmount_err,
+                    (cached_errmsg[0]) ? " msg=" : "",
+                    (cached_errmsg[0]) ? cached_errmsg : "");
+
+          if (cached_ok && validate_mounted_image(file_path, fs_type,
+                                                  ATTACH_BACKEND_LVD, unit_id,
+                                                  devname, mount_point)) {
+            bool profile_changed = false;
+            if (tuple_pass > 0) {
+              cached_profile.image_type = tuple->image_type;
+              cached_profile.raw_flags = tuple->raw_flags;
+              cached_profile.normalized_flags = tuple->normalized_flags;
+              cached_profile.sector_size = tuple->sector_size;
+              cached_profile.secondary_unit = tuple->secondary_unit;
+              profile_changed = true;
+            }
+            if (ekpfs_pass > 0 && cached_profile.include_ekpfs) {
+              cached_profile.include_ekpfs = false;
+              profile_changed = true;
+            }
+            if (cached_profile.supports_noatime != cached_used_noatime) {
+              cached_profile.supports_noatime = cached_used_noatime;
+              profile_changed = true;
+            }
+            if (profile_changed)
+              (void)cache_mount_profile(filename_local, &cached_profile);
+            log_debug("  [IMG][PFS] cached profile mounted: %s (tuple_pass=%d pass=%d ekpfs=%d noatime=%d)",
+                      file_path, tuple_pass, ekpfs_pass,
+                      cp.include_ekpfs ? 1 : 0,
+                      cached_used_noatime ? 1 : 0);
+            goto mount_success;
+          }
+
+          // If mount happened (cached_ok) but validate failed, validate already
+          // called unmount_image internally; calling it again is safe (no-op).
+          // If mount never happened (cached_ok=false), only detach the LVD unit
+          // to avoid accidentally cleaning up unrelated stale mounts.
+          if (cached_ok) {
+            (void)unmount_image(file_path, unit_id, ATTACH_BACKEND_LVD);
+          } else if (unit_id >= 0) {
+            (void)detach_attached_unit(ATTACH_BACKEND_LVD, unit_id);
+          }
+          unit_id = -1;
+          memset(devname, 0, sizeof(devname));
+          // Restore mount dir removed by unmount_image for next pass/fallback.
+          ensure_mount_dirs(mount_point);
         }
-        unit_id = -1;
-        memset(devname, 0, sizeof(devname));
-        // Restore mount dir removed by unmount_image for next pass or fallback.
-        ensure_mount_dirs(mount_point);
       }
     }
   }
