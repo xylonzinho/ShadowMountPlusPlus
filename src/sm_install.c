@@ -82,6 +82,48 @@ static bool copy_sce_sys_to_appmeta(const char *src_sce_sys,
   return ok;
 }
 
+static bool register_title(const char *src_path, const char *title_id,
+                           const char *title_name, bool metadata_restaged,
+                           bool has_src_snd0) {
+  char src_snd0[MAX_PATH];
+  if (!metadata_restaged) {
+    snprintf(src_snd0, sizeof(src_snd0), "%s/sce_sys/snd0.at9", src_path);
+    has_src_snd0 = path_exists(src_snd0);
+  }
+
+  mark_register_attempted(title_id);
+  int res = sceAppInstUtilAppInstallTitleDir(title_id, APP_BASE "/", 0);
+  sceKernelUsleep(200000);
+
+  if (res == 0) {
+    invalidate_app_db_title_cache();
+    log_debug("  [REG] Installed NEW!");
+    notify_game_installed_rich(title_id);
+    if (has_src_snd0) {
+      int snd0_updates = update_snd0info(title_id);
+      if (snd0_updates >= 0)
+        log_debug("  [DB] snd0info updated rows=%d", snd0_updates);
+    }
+    return true;
+  }
+
+  if ((uint32_t)res == 0x80990002u) {
+    invalidate_app_db_title_cache();
+    log_debug("  [REG] Restored.");
+    if (has_src_snd0) {
+      int snd0_updates = update_snd0info(title_id);
+      if (snd0_updates >= 0)
+        log_debug("  [DB] snd0info updated rows=%d", snd0_updates);
+    }
+    return true;
+  }
+
+  log_debug("  [REG] FAIL: 0x%x", res);
+  notify_system("Register failed: %s (%s)\ncode=0x%08X", title_name, title_id,
+                (uint32_t)res);
+  return false;
+}
+
 // --- Install/Remount Action ---
 static bool mount_and_install(const char *src_path, const char *title_id,
                               const char *title_name, bool is_remount,
@@ -98,12 +140,14 @@ static bool mount_and_install(const char *src_path, const char *title_id,
   bool restage_staging = false;
   bool restage_appmeta = false;
   bool has_src_snd0 = false;
+  bool pre_registered = false;
+  bool image_mount_source = is_under_image_mount_base(src_path);
 
   snprintf(user_appmeta_dir, sizeof(user_appmeta_dir), "%s/%s", APPMETA_BASE,
            title_id);
   snprintf(user_app_dir, sizeof(user_app_dir), "%s/%s", APP_BASE, title_id);
 
-  if (is_under_image_mount_base(src_path)) {
+  if (image_mount_source) {
     has_image_source = resolve_image_source_from_mount_cache(
         src_path, image_source_path, sizeof(image_source_path));
     if (!has_image_source) {
@@ -162,6 +206,16 @@ static bool mount_and_install(const char *src_path, const char *title_id,
     metadata_restaged = true;
   }
 
+  if (should_register && image_mount_source) {
+    log_debug("  [REG] image source: registering before nullfs mount");
+    if (!register_title(src_path, title_id, title_name, metadata_restaged,
+                        has_src_snd0)) {
+      return false;
+    }
+    pre_registered = true;
+    should_register = false;
+  }
+
   if (!mount_title_nullfs(title_id, src_path)) {
     log_debug("  [LINK] nullfs mount failed: title=%s src=%s", title_id,
               src_path);
@@ -196,6 +250,8 @@ static bool mount_and_install(const char *src_path, const char *title_id,
   }
 
   if (!should_register) {
+    if (pre_registered)
+      return true;
     if (metadata_restaged && has_src_snd0) {
       int snd0_updates = update_snd0info(title_id);
       if (snd0_updates >= 0)
@@ -207,37 +263,8 @@ static bool mount_and_install(const char *src_path, const char *title_id,
   }
 
   // REGISTER
-  if (!metadata_restaged) {
-    snprintf(src_snd0, sizeof(src_snd0), "%s/sce_sys/snd0.at9", src_path);
-    has_src_snd0 = path_exists(src_snd0);
-  }
-
-  mark_register_attempted(title_id);
-  int res = sceAppInstUtilAppInstallTitleDir(title_id, APP_BASE "/", 0);
-  sceKernelUsleep(200000);
-
-  if (res == 0) {
-    invalidate_app_db_title_cache();
-    log_debug("  [REG] Installed NEW!");
-    notify_game_installed_rich(title_id);
-    if (has_src_snd0) {
-      int snd0_updates = update_snd0info(title_id);
-      if (snd0_updates >= 0)
-        log_debug("  [DB] snd0info updated rows=%d", snd0_updates);
-    }
-  } else if ((uint32_t)res == 0x80990002u) {
-    invalidate_app_db_title_cache();
-    log_debug("  [REG] Restored.");
-    if (has_src_snd0) {
-      int snd0_updates = update_snd0info(title_id);
-      if (snd0_updates >= 0)
-        log_debug("  [DB] snd0info updated rows=%d", snd0_updates);
-    }
-    // Silent on restore/remount to avoid spam
-  } else {
-    log_debug("  [REG] FAIL: 0x%x", res);
-    notify_system("Register failed: %s (%s)\ncode=0x%08X", title_name, title_id,
-                  (uint32_t)res);
+  if (!register_title(src_path, title_id, title_name, metadata_restaged,
+                      has_src_snd0)) {
     return false;
   }
 
