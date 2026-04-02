@@ -125,10 +125,16 @@ static bool resolve_install_source_root(const char *src_path,
   if (!src_path || !title_id || !resolved_src || resolved_src_size == 0)
     return false;
 
+  log_debug("  [STEP][VAL] root-probe start title=%s base=%s", title_id,
+            src_path);
+
   for (size_t i = 0; i < sizeof(suffixes) / sizeof(suffixes[0]); ++i) {
     char candidate_eboot[MAX_PATH];
     char candidate_param_json[MAX_PATH];
     char candidate_param_sfo[MAX_PATH];
+    bool has_eboot = false;
+    bool has_param_json = false;
+    bool has_param_sfo = false;
 
     snprintf(candidate, sizeof(candidate), "%s%s", src_path, suffixes[i]);
     snprintf(candidate_eboot, sizeof(candidate_eboot), "%s/eboot.bin",
@@ -138,8 +144,17 @@ static bool resolve_install_source_root(const char *src_path,
     snprintf(candidate_param_sfo, sizeof(candidate_param_sfo),
              "%s/sce_sys/param.sfo", candidate);
 
-    if (path_exists(candidate_eboot) &&
-        (path_exists(candidate_param_json) || path_exists(candidate_param_sfo))) {
+    has_eboot = path_exists(candidate_eboot);
+    has_param_json = path_exists(candidate_param_json);
+    has_param_sfo = path_exists(candidate_param_sfo);
+
+    log_debug("  [STEP][VAL] root-probe candidate[%u]=%s eboot=%d param_json=%d param_sfo=%d",
+              (unsigned)i, candidate, has_eboot ? 1 : 0,
+              has_param_json ? 1 : 0, has_param_sfo ? 1 : 0);
+
+    if (has_eboot && (has_param_json || has_param_sfo)) {
+      log_debug("  [STEP][VAL] root-probe selected candidate[%u]=%s",
+                (unsigned)i, candidate);
       snprintf(resolved_src, resolved_src_size, "%s", candidate);
       return true;
     }
@@ -150,6 +165,9 @@ static bool resolve_install_source_root(const char *src_path,
     char candidate_eboot[MAX_PATH];
     char candidate_param_json[MAX_PATH];
     char candidate_param_sfo[MAX_PATH];
+    bool has_eboot = false;
+    bool has_param_json = false;
+    bool has_param_sfo = false;
 
     snprintf(candidate_eboot, sizeof(candidate_eboot), "%s/eboot.bin",
              candidate);
@@ -158,12 +176,23 @@ static bool resolve_install_source_root(const char *src_path,
     snprintf(candidate_param_sfo, sizeof(candidate_param_sfo),
              "%s/sce_sys/param.sfo", candidate);
 
-    if (path_exists(candidate_eboot) &&
-        (path_exists(candidate_param_json) || path_exists(candidate_param_sfo))) {
+    has_eboot = path_exists(candidate_eboot);
+    has_param_json = path_exists(candidate_param_json);
+    has_param_sfo = path_exists(candidate_param_sfo);
+
+    log_debug("  [STEP][VAL] root-probe candidate[title-id]=%s eboot=%d param_json=%d param_sfo=%d",
+              candidate, has_eboot ? 1 : 0, has_param_json ? 1 : 0,
+              has_param_sfo ? 1 : 0);
+
+    if (has_eboot && (has_param_json || has_param_sfo)) {
+      log_debug("  [STEP][VAL] root-probe selected title-id candidate=%s",
+                candidate);
       snprintf(resolved_src, resolved_src_size, "%s", candidate);
       return true;
     }
   }
+
+  log_debug("  [STEP][VAL] root-probe exhausted candidates for title=%s", title_id);
 
   return false;
 }
