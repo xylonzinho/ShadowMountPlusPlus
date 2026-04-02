@@ -595,7 +595,6 @@ static bool perform_image_nmount(const char *file_path, image_fs_type_t fs_type,
   const char *sigverify = PFS_MOUNT_SIGVERIFY ? "1" : "0";
   const char *playgo = PFS_MOUNT_PLAYGO ? "1" : "0";
   const char *disc = PFS_MOUNT_DISC ? "1" : "0";
-  const char *ekpfs_key = PFS_ZERO_EKPFS_KEY_HEX;
 
   struct iovec iov_ufs[] = {
       IOVEC_ENTRY("fstype"),     IOVEC_ENTRY("ufs"), IOVEC_ENTRY("from"),
@@ -631,7 +630,6 @@ static bool perform_image_nmount(const char *file_path, image_fs_type_t fs_type,
       IOVEC_ENTRY("budgetid"),   IOVEC_ENTRY(PFS_MOUNT_BUDGET_ID),
       IOVEC_ENTRY("playgo"),     IOVEC_ENTRY(playgo),
       IOVEC_ENTRY("disc"),       IOVEC_ENTRY(disc),
-      IOVEC_ENTRY("ekpfs"),      IOVEC_ENTRY(ekpfs_key),
       IOVEC_ENTRY("async"),      IOVEC_ENTRY(NULL),
       IOVEC_ENTRY("noatime"),    IOVEC_ENTRY(NULL),
       IOVEC_ENTRY("automounted"), IOVEC_ENTRY(NULL),
@@ -659,12 +657,12 @@ static bool perform_image_nmount(const char *file_path, image_fs_type_t fs_type,
   unsigned int mount_flags =
       get_nmount_flags(fs_type, mount_read_only, &mount_mode);
 
-  // For PFS, try each mkeymode in order: SD -> GD -> AC.
-  // EPROTONOSUPPORT (96) means the kernel rejected this key mode semantically;
-  // other errors are non-recoverable and stop the loop immediately.
+  // For PFS, try each mkeymode in order: GD -> SD -> AC.
+  // Keep retrying through all modes even after non-EPROTONOSUPPORT failures,
+  // because behavior can differ by firmware/content and mode combination.
   if (fs_type == IMAGE_FS_PFS) {
     static const char *const pfs_mkeymodes[] = {
-        DEVPFS_MKEYMODE_SD, DEVPFS_MKEYMODE_GD, DEVPFS_MKEYMODE_AC};
+        DEVPFS_MKEYMODE_GD, DEVPFS_MKEYMODE_SD, DEVPFS_MKEYMODE_AC};
     int pfs_mount_errno = 0;
     for (unsigned int mi = 0; mi < 3; mi++) {
       // iov_pfs[9] is the mkeymode value slot
@@ -673,7 +671,7 @@ static bool perform_image_nmount(const char *file_path, image_fs_type_t fs_type,
       memset(mount_errmsg, 0, sizeof(mount_errmsg));
       log_debug("  [IMG][%s] PFS ro=%d budgetid=%s mkeymode=%s "
             "attempt_mkeymode=%s sigverify=%s playgo=%s disc=%s "
-            "ekpfs=zero",
+        "ekpfs=unset",
             attach_backend_name(attach_backend), mount_read_only ? 1 : 0,
             PFS_MOUNT_BUDGET_ID, PFS_MOUNT_MKEYMODE, pfs_mkeymodes[mi],
             sigverify, playgo, disc);
@@ -687,8 +685,6 @@ static bool perform_image_nmount(const char *file_path, image_fs_type_t fs_type,
       log_debug("  [IMG][%s] nmount %s mkeymode=%s failed: %s",
                 attach_backend_name(attach_backend), mount_mode,
                 pfs_mkeymodes[mi], strerror(pfs_mount_errno));
-      if (pfs_mount_errno != EPROTONOSUPPORT)
-        break;
     }
     (void)detach_attached_unit(attach_backend, unit_id);
     errno = pfs_mount_errno;
