@@ -82,23 +82,12 @@ static bool copy_sce_sys_to_appmeta(const char *src_sce_sys,
   return ok;
 }
 
-static bool is_supported_install_title_id(const char *title_id) {
-  return (strncmp(title_id, "PPSA", 4) == 0 || strncmp(title_id, "CUSA", 4) == 0);
-}
-
 static bool validate_install_source(const char *src_path, const char *title_id) {
   char src_eboot[MAX_PATH];
   char src_param_json[MAX_PATH];
   char src_param_sfo[MAX_PATH];
 
   log_debug("  [STEP][VAL] begin title=%s src=%s", title_id, src_path);
-
-  if (!is_supported_install_title_id(title_id)) {
-    log_debug("  [REG] unsupported title id for install: %s", title_id);
-    return false;
-  }
-
-  log_debug("  [STEP][VAL] title id family accepted: %s", title_id);
 
   snprintf(src_eboot, sizeof(src_eboot), "%s/eboot.bin", src_path);
   snprintf(src_param_json, sizeof(src_param_json), "%s/sce_sys/param.json", src_path);
@@ -213,11 +202,10 @@ static bool mount_and_install(const char *src_path, const char *title_id,
             user_appmeta_dir);
 
   if (!validate_install_source(src_path, title_id)) {
-    notify_system("Install source invalid: %s", title_id);
-    return false;
+    log_debug("  [STEP][VAL] validation reported issues, continuing flow anyway");
+  } else {
+    log_debug("  [STEP][FLOW] source validation passed");
   }
-
-  log_debug("  [STEP][FLOW] source validation passed");
 
   if (image_mount_source) {
     log_debug("  [STEP][FLOW] image-backed source detected");
