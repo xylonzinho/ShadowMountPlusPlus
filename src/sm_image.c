@@ -1075,7 +1075,7 @@ static bool pfs_try_nmount_profile(pfs_bruteforce_state_t *state,
   bool ok = stage_b_nmount_profile(state->mount_point, devname,
                                    state->mount_read_only,
                                    state->force_mount, np, include_noatime,
-                                   sizeof(errmsg), &nmount_err);
+                                   errmsg, sizeof(errmsg), &nmount_err);
   g_pfs_global_attempts++;
   log_debug("  [IMG][BRUTE] stage=B idx=%u tuple=(img=%u raw=0x%x sec=%u sec2=%u) opts=(fstype=%s budget=%s mkey=%s sig=%u playgo=%u disc=%u ekpfs=%d noatime=%d) result=%s errno=%d",
             state->attempt_idx, tuple->image_type, tuple->raw_flags,
