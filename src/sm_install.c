@@ -115,6 +115,59 @@ static bool validate_install_source(const char *src_path, const char *title_id) 
   return true;
 }
 
+static bool resolve_install_source_root(const char *src_path,
+                                        const char *title_id,
+                                        char *resolved_src,
+                                        size_t resolved_src_size) {
+  const char *suffixes[] = {"", "/app0", "/APP0", "/image0", "/Image0"};
+  char candidate[MAX_PATH];
+
+  if (!src_path || !title_id || !resolved_src || resolved_src_size == 0)
+    return false;
+
+  for (size_t i = 0; i < sizeof(suffixes) / sizeof(suffixes[0]); ++i) {
+    char candidate_eboot[MAX_PATH];
+    char candidate_param_json[MAX_PATH];
+    char candidate_param_sfo[MAX_PATH];
+
+    snprintf(candidate, sizeof(candidate), "%s%s", src_path, suffixes[i]);
+    snprintf(candidate_eboot, sizeof(candidate_eboot), "%s/eboot.bin",
+             candidate);
+    snprintf(candidate_param_json, sizeof(candidate_param_json),
+             "%s/sce_sys/param.json", candidate);
+    snprintf(candidate_param_sfo, sizeof(candidate_param_sfo),
+             "%s/sce_sys/param.sfo", candidate);
+
+    if (path_exists(candidate_eboot) &&
+        (path_exists(candidate_param_json) || path_exists(candidate_param_sfo))) {
+      snprintf(resolved_src, resolved_src_size, "%s", candidate);
+      return true;
+    }
+  }
+
+  snprintf(candidate, sizeof(candidate), "%s/%s", src_path, title_id);
+  {
+    char candidate_eboot[MAX_PATH];
+    char candidate_param_json[MAX_PATH];
+    char candidate_param_sfo[MAX_PATH];
+
+    snprintf(candidate_eboot, sizeof(candidate_eboot), "%s/eboot.bin",
+             candidate);
+    snprintf(candidate_param_json, sizeof(candidate_param_json),
+             "%s/sce_sys/param.json", candidate);
+    snprintf(candidate_param_sfo, sizeof(candidate_param_sfo),
+             "%s/sce_sys/param.sfo", candidate);
+
+    if (path_exists(candidate_eboot) &&
+        (path_exists(candidate_param_json) || path_exists(candidate_param_sfo))) {
+      snprintf(resolved_src, resolved_src_size, "%s", candidate);
+      return true;
+    }
+  }
+
+  return false;
+}
+
 static bool register_title(const char *src_path, const char *title_id,
                            const char *title_name, bool metadata_restaged,
                            bool has_src_snd0) {
@@ -190,6 +243,8 @@ static bool mount_and_install(const char *src_path, const char *title_id,
   bool restage_appmeta = false;
   bool has_src_snd0 = false;
   bool image_mount_source = is_under_image_mount_base(src_path);
+  char resolved_src_path[MAX_PATH];
+  const char *effective_src_path = src_path;
 
   log_debug("  [STEP][FLOW] begin title=%s remount=%d should_register=%d src=%s",
             title_id, is_remount ? 1 : 0, should_register ? 1 : 0, src_path);
@@ -201,7 +256,21 @@ static bool mount_and_install(const char *src_path, const char *title_id,
   log_debug("  [STEP][FLOW] target dirs app=%s appmeta=%s", user_app_dir,
             user_appmeta_dir);
 
-  if (!validate_install_source(src_path, title_id)) {
+  log_debug("  [STEP][VAL] resolving source root from %s", src_path);
+  if (!resolve_install_source_root(src_path, title_id, resolved_src_path,
+                                   sizeof(resolved_src_path))) {
+    log_debug("  [STEP][VAL] no valid install root found for %s under %s",
+              title_id, src_path);
+    log_debug("  [REG] skipping install due to invalid source root");
+    return false;
+  }
+  effective_src_path = resolved_src_path;
+  if (strcmp(effective_src_path, src_path) != 0) {
+    log_debug("  [STEP][VAL] source root resolved: %s -> %s", src_path,
+              effective_src_path);
+  }
+
+  if (!validate_install_source(effective_src_path, title_id)) {
     log_debug("  [STEP][VAL] validation reported issues, continuing flow anyway");
   } else {
     log_debug("  [STEP][FLOW] source validation passed");
@@ -235,7 +304,7 @@ static bool mount_and_install(const char *src_path, const char *title_id,
 
   // COPY FILES
   if (restage_staging || restage_appmeta) {
-    snprintf(src_sce_sys, sizeof(src_sce_sys), "%s/sce_sys", src_path);
+    snprintf(src_sce_sys, sizeof(src_sce_sys), "%s/sce_sys", effective_src_path);
     snprintf(src_snd0, sizeof(src_snd0), "%s/snd0.at9", src_sce_sys);
     has_src_snd0 = path_exists(src_snd0);
     log_debug("  [STEP][COPY] source sce_sys=%s snd0_present=%d", src_sce_sys,
@@ -250,10 +319,11 @@ static bool mount_and_install(const char *src_path, const char *title_id,
     mkdir(user_app_dir, 0777);
     snprintf(user_sce_sys, sizeof(user_sce_sys), "%s/sce_sys", user_app_dir);
     mkdir(user_sce_sys, 0777);
-    log_debug("  [STEP][COPY] copy_dir %s -> %s", src_sce_sys, user_sce_sys);
-    if (copy_dir(src_sce_sys, user_sce_sys) != 0) {
-      log_debug("  [COPY] Failed to copy sce_sys staging: %s -> %s", src_sce_sys,
-                user_sce_sys);
+    log_debug("  [STEP][COPY] copy app metadata files %s -> %s", src_sce_sys,
+              user_sce_sys);
+    if (!copy_sce_sys_to_appmeta(src_sce_sys, user_sce_sys)) {
+      log_debug("  [COPY] Failed to copy sce_sys metadata staging: %s -> %s",
+                src_sce_sys, user_sce_sys);
       return false;
     }
 
@@ -284,10 +354,10 @@ static bool mount_and_install(const char *src_path, const char *title_id,
   }
 
   log_debug("  [STEP][MOUNT] mounting nullfs title=%s src=%s", title_id,
-            src_path);
-  if (!mount_title_nullfs(title_id, src_path)) {
+            effective_src_path);
+  if (!mount_title_nullfs(title_id, effective_src_path)) {
     log_debug("  [LINK] nullfs mount failed: title=%s src=%s", title_id,
-              src_path);
+              effective_src_path);
     return false;
   }
   log_debug("  [STEP][MOUNT] nullfs mounted");
@@ -298,10 +368,11 @@ static bool mount_and_install(const char *src_path, const char *title_id,
   mkdir(user_app_dir, 0777);
   snprintf(lnk_path, sizeof(lnk_path), "%s/mount.lnk", user_app_dir);
   log_debug("  [STEP][LINK] writing mount link %s", lnk_path);
-  if (!write_link_file(lnk_path, src_path))
+  if (!write_link_file(lnk_path, effective_src_path))
     return false;
 
-  log_debug("  [LINK] mount.lnk created: %s -> %s", lnk_path, src_path);
+  log_debug("  [LINK] mount.lnk created: %s -> %s", lnk_path,
+            effective_src_path);
 
   char img_lnk_path[MAX_PATH];
   snprintf(img_lnk_path, sizeof(img_lnk_path), "%s/mount_img.lnk",
@@ -313,9 +384,9 @@ static bool mount_and_install(const char *src_path, const char *title_id,
       return false;
     log_debug("  [LINK] mount_img.lnk created: %s -> %s", img_lnk_path,
               image_source_path);
-    if (!cache_image_source_mapping(image_source_path, src_path)) {
+    if (!cache_image_source_mapping(image_source_path, effective_src_path)) {
       log_debug("  [LINK] image source cache update failed: %s -> %s",
-                src_path, image_source_path);
+                effective_src_path, image_source_path);
     }
   } else if (unlink(img_lnk_path) != 0 && errno != ENOENT) {
     log_debug("  [LINK] remove failed for %s: %s", img_lnk_path,
@@ -341,7 +412,7 @@ static bool mount_and_install(const char *src_path, const char *title_id,
   log_debug("  [STEP][REG] pre-install settle delay start");
   sceKernelUsleep(300000);
   log_debug("  [STEP][REG] pre-install settle delay done");
-  if (!register_title(src_path, title_id, title_name, metadata_restaged,
+  if (!register_title(effective_src_path, title_id, title_name, metadata_restaged,
                       has_src_snd0)) {
     return false;
   }
