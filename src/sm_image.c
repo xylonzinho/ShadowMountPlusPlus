@@ -1822,44 +1822,9 @@ bool mount_image(const char *file_path, image_fs_type_t fs_type) {
   int unit_id = -1;
   char devname[64];
   memset(devname, 0, sizeof(devname));
+  const char *filename_local = get_filename_component(file_path);
 
-  // For PFS images with brute-force enabled, use adaptive mount strategy
-  if (fs_type == IMAGE_FS_PFS && cfg->pfs_bruteforce_enabled) {
-    time_t cooldown_remaining = 0;
-    if (is_pfs_cooldown_active(file_path, &cooldown_remaining)) {
-      errno = EAGAIN;
-      return false;
-    }
-
-    time_t now = time(NULL);
-    uint32_t scan_window_seconds = cfg->scan_interval_us / 1000000u;
-    if (scan_window_seconds == 0)
-      scan_window_seconds = 1;
-    if (g_pfs_global_attempt_window == 0 ||
-        now - g_pfs_global_attempt_window >= (time_t)scan_window_seconds) {
-      g_pfs_global_attempt_window = now;
-      g_pfs_global_attempts = 0;
-    }
-
-    log_debug("  [IMG][BRUTE] start two-stage solver: %s", file_path);
-
-    const char *filename_local = get_filename_component(file_path);
-    mount_profile_t probe_profiles[SM_PROBE_MAX_WINNERS];
-    memset(probe_profiles, 0, sizeof(probe_profiles));
-    int probe_profile_count = bench_load_probe(filename_local,
-                                               probe_profiles,
-                                               SM_PROBE_MAX_WINNERS);
-    if (cfg->pfs_probe_enabled && probe_profile_count == 0) {
-      log_debug("  [IMG][PROBE] collecting working profiles for: %s", file_path);
-      probe_profile_count = pfs_collect_working_profiles(
-          cfg, file_path, fs_type, st.st_size, mount_point,
-          mount_read_only, force_mount,
-          probe_profiles, SM_PROBE_MAX_WINNERS);
-      if (probe_profile_count > 0)
-        bench_save_probe(filename_local, probe_profiles, probe_profile_count);
-      log_debug("  [IMG][PROBE] completed: %d working profiles", probe_profile_count);
-    }
-
+  if (fs_type == IMAGE_FS_PFS) {
     mount_profile_t cached_profile;
     if (get_cached_mount_profile(filename_local, &cached_profile)) {
       pfs_attach_tuple_t cached_tuple = {
@@ -1903,7 +1868,7 @@ bool mount_image(const char *file_path, image_fs_type_t fs_type) {
             cached_profile.supports_noatime = cached_used_noatime;
             (void)cache_mount_profile(filename_local, &cached_profile);
           }
-          log_debug("  [IMG][BRUTE] cached winner reused: %s (noatime=%d)",
+          log_debug("  [IMG][PFS] cached profile reused: %s (noatime=%d)",
                     file_path, cached_used_noatime ? 1 : 0);
           goto mount_success;
         }
@@ -1911,6 +1876,43 @@ bool mount_image(const char *file_path, image_fs_type_t fs_type) {
         unit_id = -1;
         memset(devname, 0, sizeof(devname));
       }
+    }
+  }
+
+  // For PFS images with brute-force enabled, use adaptive mount strategy
+  if (fs_type == IMAGE_FS_PFS && cfg->pfs_bruteforce_enabled) {
+    time_t cooldown_remaining = 0;
+    if (is_pfs_cooldown_active(file_path, &cooldown_remaining)) {
+      errno = EAGAIN;
+      return false;
+    }
+
+    time_t now = time(NULL);
+    uint32_t scan_window_seconds = cfg->scan_interval_us / 1000000u;
+    if (scan_window_seconds == 0)
+      scan_window_seconds = 1;
+    if (g_pfs_global_attempt_window == 0 ||
+        now - g_pfs_global_attempt_window >= (time_t)scan_window_seconds) {
+      g_pfs_global_attempt_window = now;
+      g_pfs_global_attempts = 0;
+    }
+
+    log_debug("  [IMG][BRUTE] start two-stage solver: %s", file_path);
+
+    mount_profile_t probe_profiles[SM_PROBE_MAX_WINNERS];
+    memset(probe_profiles, 0, sizeof(probe_profiles));
+    int probe_profile_count = bench_load_probe(filename_local,
+                                               probe_profiles,
+                                               SM_PROBE_MAX_WINNERS);
+    if (cfg->pfs_probe_enabled && probe_profile_count == 0) {
+      log_debug("  [IMG][PROBE] collecting working profiles for: %s", file_path);
+      probe_profile_count = pfs_collect_working_profiles(
+          cfg, file_path, fs_type, st.st_size, mount_point,
+          mount_read_only, force_mount,
+          probe_profiles, SM_PROBE_MAX_WINNERS);
+      if (probe_profile_count > 0)
+        bench_save_probe(filename_local, probe_profiles, probe_profile_count);
+      log_debug("  [IMG][PROBE] completed: %d working profiles", probe_profile_count);
     }
 
     static const uint16_t k_fast_image_types[] = {0};
