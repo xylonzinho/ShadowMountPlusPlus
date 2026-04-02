@@ -257,6 +257,27 @@ static void init_runtime_config_defaults(runtime_config_state_t *state) {
   state->cfg.md_sector_exfat = MD_SECTOR_SIZE_EXFAT;
   state->cfg.md_sector_ufs = MD_SECTOR_SIZE_UFS;
   state->cfg.md_sector_zfs = MD_SECTOR_SIZE_ZFS;
+  // Adaptive mount strategy (brute-force) defaults
+  state->cfg.pfs_bruteforce_enabled = true;
+  state->cfg.pfs_bruteforce_sleep_ms = 200u;
+  state->cfg.pfs_bruteforce_max_attempts = 20u;
+  state->cfg.pfs_bruteforce_max_seconds_per_image = 60u;
+  state->cfg.pfs_bruteforce_cooldown_seconds = 300u;
+  state->cfg.pfs_bruteforce_max_global_attempts_per_scan = 200u;
+  (void)strlcpy(state->cfg.pfs_bruteforce_sector_sizes, "4096",
+                sizeof(state->cfg.pfs_bruteforce_sector_sizes));
+  (void)strlcpy(state->cfg.pfs_bruteforce_image_types, "0,5,2,3,4,6,1,7",
+                sizeof(state->cfg.pfs_bruteforce_image_types));
+  (void)strlcpy(state->cfg.pfs_bruteforce_raw_flags, "0x9,0x8,0xD,0xC",
+                sizeof(state->cfg.pfs_bruteforce_raw_flags));
+  (void)strlcpy(state->cfg.pfs_bruteforce_fstypes,
+                "pfs,ppr_pfs,transaction_pfs",
+                sizeof(state->cfg.pfs_bruteforce_fstypes));
+  // Probe + benchmark defaults (both disabled; no overhead unless opted in)
+  state->cfg.pfs_probe_enabled = false;
+  state->cfg.pfs_bench_enabled = false;
+  state->cfg.pfs_bench_min_read_bytes = 65536u;
+  state->cfg.pfs_bench_delay_threshold_ms = 500u;
   memset(state->image_mode_rules, 0, sizeof(state->image_mode_rules));
   clear_kstuff_title_rules(state);
   init_runtime_scan_paths_defaults(state);
@@ -1306,6 +1327,123 @@ static config_load_status_t load_runtime_config_state(runtime_config_state_t *st
       continue;
     }
 
+    // Brute-force configuration keys
+    if (strcasecmp(key, "pfs_bruteforce_enabled") == 0) {
+      if (!parse_bool_ini(value, &bval)) {
+        log_debug("  [CFG] invalid bool at line %d: %s=%s", line_no, key, value);
+        continue;
+      }
+      state->cfg.pfs_bruteforce_enabled = bval;
+      continue;
+    }
+
+    if (strcasecmp(key, "pfs_bruteforce_sleep_ms") == 0) {
+      if (!parse_u32_ini(value, &u32)) {
+        log_debug("  [CFG] invalid uint32 at line %d: %s=%s", line_no, key, value);
+        continue;
+      }
+      state->cfg.pfs_bruteforce_sleep_ms = u32;
+      continue;
+    }
+
+    if (strcasecmp(key, "pfs_bruteforce_max_attempts") == 0) {
+      if (!parse_u32_ini(value, &u32) || u32 == 0) {
+        log_debug("  [CFG] invalid attempts at line %d: %s=%s (must be > 0)", line_no, key, value);
+        continue;
+      }
+      state->cfg.pfs_bruteforce_max_attempts = u32;
+      continue;
+    }
+
+    if (strcasecmp(key, "pfs_bruteforce_max_seconds_per_image") == 0) {
+      if (!parse_u32_ini(value, &u32) || u32 == 0) {
+        log_debug("  [CFG] invalid timeout at line %d: %s=%s (must be > 0)", line_no, key, value);
+        continue;
+      }
+      state->cfg.pfs_bruteforce_max_seconds_per_image = u32;
+      continue;
+    }
+
+    if (strcasecmp(key, "pfs_bruteforce_cooldown_seconds") == 0) {
+      if (!parse_u32_ini(value, &u32)) {
+        log_debug("  [CFG] invalid cooldown at line %d: %s=%s", line_no, key,
+                  value);
+        continue;
+      }
+      state->cfg.pfs_bruteforce_cooldown_seconds = u32;
+      continue;
+    }
+
+    if (strcasecmp(key, "pfs_bruteforce_max_global_attempts") == 0) {
+      if (!parse_u32_ini(value, &u32) || u32 == 0) {
+        log_debug("  [CFG] invalid global attempts at line %d: %s=%s",
+                  line_no, key, value);
+        continue;
+      }
+      state->cfg.pfs_bruteforce_max_global_attempts_per_scan = u32;
+      continue;
+    }
+
+    if (strcasecmp(key, "pfs_bruteforce_sector_sizes") == 0) {
+      (void)strlcpy(state->cfg.pfs_bruteforce_sector_sizes, value,
+                    sizeof(state->cfg.pfs_bruteforce_sector_sizes));
+      continue;
+    }
+
+    if (strcasecmp(key, "pfs_bruteforce_image_types") == 0) {
+      (void)strlcpy(state->cfg.pfs_bruteforce_image_types, value,
+                    sizeof(state->cfg.pfs_bruteforce_image_types));
+      continue;
+    }
+
+    if (strcasecmp(key, "pfs_bruteforce_raw_flags") == 0) {
+      (void)strlcpy(state->cfg.pfs_bruteforce_raw_flags, value,
+                    sizeof(state->cfg.pfs_bruteforce_raw_flags));
+      continue;
+    }
+
+    if (strcasecmp(key, "pfs_bruteforce_fstypes") == 0) {
+      (void)strlcpy(state->cfg.pfs_bruteforce_fstypes, value,
+                    sizeof(state->cfg.pfs_bruteforce_fstypes));
+      continue;
+    }
+
+    if (strcasecmp(key, "pfs_probe_enabled") == 0) {
+      if (!parse_bool_ini(value, &bval)) {
+        log_debug("  [CFG] invalid bool at line %d: %s=%s", line_no, key, value);
+        continue;
+      }
+      state->cfg.pfs_probe_enabled = bval;
+      continue;
+    }
+
+    if (strcasecmp(key, "pfs_bench_enabled") == 0) {
+      if (!parse_bool_ini(value, &bval)) {
+        log_debug("  [CFG] invalid bool at line %d: %s=%s", line_no, key, value);
+        continue;
+      }
+      state->cfg.pfs_bench_enabled = bval;
+      continue;
+    }
+
+    if (strcasecmp(key, "pfs_bench_min_read_bytes") == 0) {
+      if (!parse_u32_ini(value, &u32)) {
+        log_debug("  [CFG] invalid uint32 at line %d: %s=%s", line_no, key, value);
+        continue;
+      }
+      state->cfg.pfs_bench_min_read_bytes = u32;
+      continue;
+    }
+
+    if (strcasecmp(key, "pfs_bench_delay_threshold_ms") == 0) {
+      if (!parse_u32_ini(value, &u32)) {
+        log_debug("  [CFG] invalid uint32 at line %d: %s=%s", line_no, key, value);
+        continue;
+      }
+      state->cfg.pfs_bench_delay_threshold_ms = u32;
+      continue;
+    }
+
     bool is_sector_key =
         (strcasecmp(key, "lvd_exfat_sector_size") == 0) ||
         (strcasecmp(key, "lvd_ufs_sector_size") == 0) ||
@@ -1377,7 +1515,10 @@ static config_load_status_t load_runtime_config_state(runtime_config_state_t *st
             "exfat_backend=%s ufs_backend=%s zfs_backend=%s "
             "lvd_sec(exfat=%u ufs=%u zfs=%u pfs=%u) md_sec(exfat=%u ufs=%u zfs=%u) "
             "scan_interval_s=%u stability_wait_s=%u scan_paths=%d image_rules=%d "
-            "kstuff_no_pause=%d kstuff_delay_rules=%d",
+            "kstuff_no_pause=%d kstuff_delay_rules=%d "
+            "pfs_bruteforce_enabled=%d sleep_ms=%u max_attempts=%u max_s=%u "
+            "cooldown_s=%u max_global=%u "
+            "pfs_probe=%d pfs_bench=%d bench_min_read=%u bench_delay_ms=%u",
             state->cfg.debug_enabled ? 1 : 0, state->cfg.quiet_mode ? 1 : 0,
             state->cfg.mount_read_only ? 1 : 0,
             state->cfg.force_mount ? 1 : 0, state->cfg.scan_depth,
@@ -1396,7 +1537,17 @@ static config_load_status_t load_runtime_config_state(runtime_config_state_t *st
             state->cfg.md_sector_zfs, state->cfg.scan_interval_us / 1000000u,
             state->cfg.stability_wait_seconds, state->scan_path_count,
             image_rule_count, state->kstuff_no_pause_title_count,
-            kstuff_delay_rule_count);
+            kstuff_delay_rule_count,
+            state->cfg.pfs_bruteforce_enabled ? 1 : 0,
+            state->cfg.pfs_bruteforce_sleep_ms,
+            state->cfg.pfs_bruteforce_max_attempts,
+            state->cfg.pfs_bruteforce_max_seconds_per_image,
+            state->cfg.pfs_bruteforce_cooldown_seconds,
+            state->cfg.pfs_bruteforce_max_global_attempts_per_scan,
+            state->cfg.pfs_probe_enabled ? 1 : 0,
+            state->cfg.pfs_bench_enabled ? 1 : 0,
+            state->cfg.pfs_bench_min_read_bytes,
+            state->cfg.pfs_bench_delay_threshold_ms);
 
   return CONFIG_LOAD_OK;
 }
