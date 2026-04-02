@@ -806,6 +806,7 @@ typedef struct {
   uint32_t attempt_idx;
   bool limit_logged;
   uint32_t attach_einval_count;
+  uint32_t nmount_enoent_count;
   uint32_t nmount_einval_count;
   uint32_t nmount_semantic_count;
   uint32_t other_fail_count;
@@ -995,8 +996,13 @@ static bool stage_b_nmount_profile(const char *mount_point, const char *devname,
   if (nmount(iov, iovlen, mount_read_only ? MNT_RDONLY : 0) == 0)
     return true;
 
+  int nmount_errno = errno;
   if (errno_out)
-    *errno_out = errno;
+    *errno_out = nmount_errno;
+  if (mount_errmsg && errmsg_size > 0 && mount_errmsg[0] == '\0') {
+    (void)snprintf(mount_errmsg, errmsg_size, "%s (%d)",
+                   strerror(nmount_errno), nmount_errno);
+  }
   return false;
 }
 
@@ -1054,8 +1060,41 @@ static void count_attach_failure(pfs_bruteforce_state_t *state, int err) {
     state->other_fail_count++;
 }
 
+static const char *errno_name_short(int err) {
+  switch (err) {
+  case 0:
+    return "OK";
+  case ENOENT:
+    return "ENOENT";
+  case EINVAL:
+    return "EINVAL";
+  case EOPNOTSUPP:
+    return "EOPNOTSUPP";
+  case EACCES:
+    return "EACCES";
+  case EPERM:
+    return "EPERM";
+  case ENOMEM:
+    return "ENOMEM";
+  case ETIMEDOUT:
+    return "ETIMEDOUT";
+  case EBUSY:
+    return "EBUSY";
+  case ENXIO:
+    return "ENXIO";
+  case ENODEV:
+    return "ENODEV";
+  case EIO:
+    return "EIO";
+  default:
+    return "OTHER";
+  }
+}
+
 static void count_nmount_failure(pfs_bruteforce_state_t *state, int err) {
-  if (err == EINVAL)
+  if (err == ENOENT)
+    state->nmount_enoent_count++;
+  else if (err == EINVAL)
     state->nmount_einval_count++;
   else if (err == EOPNOTSUPP)
     state->nmount_semantic_count++;
@@ -1077,13 +1116,16 @@ static bool pfs_try_nmount_profile(pfs_bruteforce_state_t *state,
                                    state->force_mount, np, include_noatime,
                                    errmsg, sizeof(errmsg), &nmount_err);
   g_pfs_global_attempts++;
-  log_debug("  [IMG][BRUTE] stage=B idx=%u tuple=(img=%u raw=0x%x sec=%u sec2=%u) opts=(fstype=%s budget=%s mkey=%s sig=%u playgo=%u disc=%u ekpfs=%d noatime=%d) result=%s errno=%d",
+  log_debug("  [IMG][BRUTE] stage=B idx=%u tuple=(img=%u raw=0x%x sec=%u sec2=%u) opts=(fstype=%s budget=%s mkey=%s sig=%u playgo=%u disc=%u ekpfs=%d noatime=%d) result=%s errno=%d(%s)%s%s",
             state->attempt_idx, tuple->image_type, tuple->raw_flags,
             tuple->sector_size, tuple->secondary_unit, np->fstype,
             np->budgetid ? np->budgetid : "-",
             np->mkeymode ? np->mkeymode : "-", np->sigverify, np->playgo,
             np->disc, np->include_ekpfs ? 1 : 0, include_noatime ? 1 : 0,
-            ok ? "NMOUNT_OK" : "NMOUNT_FAIL", nmount_err);
+            ok ? "NMOUNT_OK" : "NMOUNT_FAIL", nmount_err,
+            errno_name_short(nmount_err),
+            (!ok && errmsg[0]) ? " msg=" : "",
+            (!ok && errmsg[0]) ? errmsg : "");
   state->attempt_idx++;
 
   if (!ok && nmount_err == EINVAL && include_noatime) {
@@ -1093,13 +1135,16 @@ static bool pfs_try_nmount_profile(pfs_bruteforce_state_t *state,
                                            state->force_mount, np, false,
                                            errmsg, sizeof(errmsg), &retry_err);
     g_pfs_global_attempts++;
-    log_debug("  [IMG][BRUTE] stage=B idx=%u retry=(drop-noatime) tuple=(img=%u raw=0x%x sec=%u sec2=%u) opts=(fstype=%s budget=%s mkey=%s sig=%u playgo=%u disc=%u ekpfs=%d noatime=0) result=%s errno=%d",
+    log_debug("  [IMG][BRUTE] stage=B idx=%u retry=(drop-noatime) tuple=(img=%u raw=0x%x sec=%u sec2=%u) opts=(fstype=%s budget=%s mkey=%s sig=%u playgo=%u disc=%u ekpfs=%d noatime=0) result=%s errno=%d(%s)%s%s",
               state->attempt_idx, tuple->image_type, tuple->raw_flags,
               tuple->sector_size, tuple->secondary_unit, np->fstype,
               np->budgetid ? np->budgetid : "-",
               np->mkeymode ? np->mkeymode : "-", np->sigverify, np->playgo,
               np->disc, np->include_ekpfs ? 1 : 0,
-              retry_ok ? "NMOUNT_OK" : "NMOUNT_FAIL", retry_err);
+          retry_ok ? "NMOUNT_OK" : "NMOUNT_FAIL", retry_err,
+          errno_name_short(retry_err),
+              (!retry_ok && errmsg[0]) ? " msg=" : "",
+              (!retry_ok && errmsg[0]) ? errmsg : "");
     state->attempt_idx++;
 
     ok = retry_ok;
@@ -1944,8 +1989,10 @@ bool mount_image(const char *file_path, image_fs_type_t fs_type) {
     }
 
     set_pfs_cooldown(file_path, cfg->pfs_bruteforce_cooldown_seconds);
-    log_debug("  [IMG][BRUTE] exhausted summary: attach_e22=%u nmount_e22=%u nmount_e96=%u other=%u attempts=%u",
-              brute_state.attach_einval_count, brute_state.nmount_einval_count,
+    log_debug("  [IMG][BRUTE] exhausted summary: attach_e22=%u nmount_e2=%u nmount_e22=%u nmount_e96=%u other=%u attempts=%u",
+          brute_state.attach_einval_count,
+          brute_state.nmount_enoent_count,
+          brute_state.nmount_einval_count,
               brute_state.nmount_semantic_count, brute_state.other_fail_count,
               brute_state.attempt_idx);
     log_debug("  [IMG][BRUTE] all profiles failed, moving to next image");
