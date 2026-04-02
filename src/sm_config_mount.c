@@ -264,7 +264,7 @@ static void init_runtime_config_defaults(runtime_config_state_t *state) {
   state->cfg.pfs_bruteforce_max_seconds_per_image = 60u;
   state->cfg.pfs_bruteforce_cooldown_seconds = 300u;
   state->cfg.pfs_bruteforce_max_global_attempts_per_scan = 200u;
-  (void)strlcpy(state->cfg.pfs_bruteforce_sector_sizes, "65536,32768,4096",
+  (void)strlcpy(state->cfg.pfs_bruteforce_sector_sizes, "4096",
                 sizeof(state->cfg.pfs_bruteforce_sector_sizes));
   (void)strlcpy(state->cfg.pfs_bruteforce_image_types, "0,5,2,3,4,6,1,7",
                 sizeof(state->cfg.pfs_bruteforce_image_types));

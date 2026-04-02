@@ -118,12 +118,13 @@ void format_profile_for_cache(const mount_profile_t *profile,
     return;
 
   snprintf(buf, buf_size,
-           "v1:%u:0x%x:0x%x:%u:%u:%s:%s:%s:%u:%u:%u:%u:%d",
+           "v2:%u:0x%x:0x%x:%u:%u:%s:%s:%s:%u:%u:%u:%u:%u:%d",
            profile->image_type, profile->raw_flags,
            profile->normalized_flags, profile->sector_size,
            profile->secondary_unit, profile->fstype, profile->budgetid,
            profile->mkeymode, profile->sigverify, profile->playgo,
            profile->disc, profile->include_ekpfs ? 1u : 0u,
+           profile->supports_noatime ? 1u : 0u,
            profile->mount_read_only ? 1 : 0);
 }
 
@@ -137,7 +138,10 @@ bool parse_profile_from_cache(const char *cached_str,
 
   memset(profile_out, 0, sizeof(*profile_out));
 
-  // Parse format: v0:image_type:raw_flags:raw_flags:norm_flags:sector_size:fstype:budgetid:mkeymode:sigverify:playgo:disc:ro
+  // Parse format:
+  // v2:image_type:raw_flags:norm_flags:sector_size:sec2:fstype:budgetid:mkeymode:sig:playgo:disc:ekpfs:noatime:ro
+  // v1:image_type:raw_flags:norm_flags:sector_size:sec2:fstype:budgetid:mkeymode:sig:playgo:disc:ekpfs:ro
+  // v0:image_type:raw_flags:raw_flags:norm_flags:sector_size:fstype:budgetid:mkeymode:sig:playgo:disc:ro
   char *saveptr = NULL;
   char *token = NULL;
 
@@ -146,9 +150,10 @@ bool parse_profile_from_cache(const char *cached_str,
   if (!token)
     return false;
 
+  bool is_v2 = (strcmp(token, "v2") == 0);
   bool is_v1 = (strcmp(token, "v1") == 0);
   bool is_v0 = (strcmp(token, "v0") == 0);
-  if (!is_v1 && !is_v0)
+  if (!is_v2 && !is_v1 && !is_v0)
     return false;
 
   // image_type
@@ -157,7 +162,7 @@ bool parse_profile_from_cache(const char *cached_str,
     return false;
   profile_out->image_type = (uint16_t)strtoul(token, NULL, 10);
 
-  if (is_v1) {
+  if (is_v2 || is_v1) {
     token = strtok_r(NULL, ":", &saveptr);
     if (!token)
       return false;
@@ -262,13 +267,24 @@ bool parse_profile_from_cache(const char *cached_str,
     return false;
   profile_out->disc = (uint8_t)strtoul(token, NULL, 10);
 
-  if (is_v1) {
+  if (is_v2 || is_v1) {
     token = strtok_r(NULL, ":", &saveptr);
     if (!token)
       return false;
     profile_out->include_ekpfs = ((uint32_t)strtoul(token, NULL, 10) != 0);
+
+    if (is_v2) {
+      token = strtok_r(NULL, ":", &saveptr);
+      if (!token)
+        return false;
+      profile_out->supports_noatime =
+          ((uint32_t)strtoul(token, NULL, 10) != 0);
+    } else {
+      profile_out->supports_noatime = true;
+    }
   } else {
     profile_out->include_ekpfs = true;
+    profile_out->supports_noatime = true;
   }
 
   // mount_read_only
@@ -283,6 +299,93 @@ bool parse_profile_from_cache(const char *cached_str,
   return true;
 }
 
+static bool upsert_cache_profile_line(const char *image_filename,
+                                     const char *profile_str) {
+  char temp_path[MAX_PATH];
+  int written = snprintf(temp_path, sizeof(temp_path), "%s.tmp", AUTOTUNE_INI_PATH);
+  if (written <= 0 || (size_t)written >= sizeof(temp_path))
+    return false;
+
+  FILE *in = fopen(AUTOTUNE_INI_PATH, "r");
+  FILE *out = fopen(temp_path, "w");
+  if (!out) {
+    log_debug("  [IMG][CACHE] temp open failed: %s (%s)", temp_path,
+              strerror(errno));
+    if (in)
+      fclose(in);
+    return false;
+  }
+
+  const char *prefix = "mount_profile=";
+  bool replaced = false;
+  if (in) {
+    char line[AUTOTUNE_LINE_SIZE];
+    while (fgets(line, sizeof(line), in) != NULL) {
+      char original[AUTOTUNE_LINE_SIZE];
+      (void)strlcpy(original, line, sizeof(original));
+
+      size_t len = strlen(line);
+      if (len > 0 && line[len - 1] == '\n')
+        line[len - 1] = '\0';
+
+      bool is_target = false;
+      if (strncmp(line, prefix, strlen(prefix)) == 0) {
+        const char *value = line + strlen(prefix);
+        const char *colon = strchr(value, ':');
+        if (colon) {
+          size_t filename_len = (size_t)(colon - value);
+          if (filename_len == strlen(image_filename) &&
+              strncmp(value, image_filename, filename_len) == 0) {
+            is_target = true;
+          }
+        }
+      }
+
+      if (is_target) {
+        if (!replaced) {
+          if (fprintf(out, "mount_profile=%s:%s\n", image_filename,
+                      profile_str) < 0) {
+            goto write_failed;
+          }
+          replaced = true;
+        }
+      } else {
+        if (fputs(original, out) == EOF)
+          goto write_failed;
+      }
+    }
+
+    fclose(in);
+    in = NULL;
+  }
+
+  if (!replaced &&
+      fprintf(out, "mount_profile=%s:%s\n", image_filename, profile_str) < 0) {
+    goto write_failed;
+  }
+
+  if (fclose(out) != 0) {
+    out = NULL;
+    unlink(temp_path);
+    return false;
+  }
+  out = NULL;
+
+  if (rename(temp_path, AUTOTUNE_INI_PATH) != 0) {
+    unlink(temp_path);
+    return false;
+  }
+
+  return true;
+
+write_failed:
+  if (in)
+    fclose(in);
+  fclose(out);
+  unlink(temp_path);
+  return false;
+}
+
 bool cache_mount_profile(const char *image_filename,
                          const mount_profile_t *profile) {
   if (!image_filename || !profile)
@@ -291,11 +394,12 @@ bool cache_mount_profile(const char *image_filename,
   if (!load_autotune_cache())
     return false;
 
-  // Check if already cached, and if so, skip
+  // Check if already cached
+  int existing_index = -1;
   for (int i = 0; i < g_autotune_cache_count; i++) {
     if (strcmp(g_autotune_cache[i].filename, image_filename) == 0) {
-      log_debug("  [IMG][CACHE] profile already cached for %s", image_filename);
-      return true;
+      existing_index = i;
+      break;
     }
   }
 
@@ -303,27 +407,23 @@ bool cache_mount_profile(const char *image_filename,
   char profile_str[256];
   format_profile_for_cache(profile, profile_str, sizeof(profile_str));
 
-  // Append to autotune.ini
-  FILE *fp = fopen(AUTOTUNE_INI_PATH, "a");
-  if (!fp) {
-    // Try to create directory first
+  if (!upsert_cache_profile_line(image_filename, profile_str)) {
     mkdir("/data/shadowmount", 0777);
-    fp = fopen(AUTOTUNE_INI_PATH, "a");
-    if (!fp) {
-      log_debug("  [IMG][CACHE] failed to open %s: %s", AUTOTUNE_INI_PATH,
-                strerror(errno));
+    if (!upsert_cache_profile_line(image_filename, profile_str)) {
+      log_debug("  [IMG][CACHE] failed to upsert %s", AUTOTUNE_INI_PATH);
       return false;
     }
   }
 
-  fprintf(fp, "mount_profile=%s:%s\n", image_filename, profile_str);
-  fclose(fp);
-
-  // Add to in-memory cache
-  if (g_autotune_cache_count < AUTOTUNE_MAX_ENTRIES) {
-    (void)strlcpy(g_autotune_cache[g_autotune_cache_count].filename, image_filename,
+  if (existing_index >= 0) {
+    (void)strlcpy(g_autotune_cache[existing_index].profile_str, profile_str,
+                  sizeof(g_autotune_cache[existing_index].profile_str));
+  } else if (g_autotune_cache_count < AUTOTUNE_MAX_ENTRIES) {
+    (void)strlcpy(g_autotune_cache[g_autotune_cache_count].filename,
+                  image_filename,
                   sizeof(g_autotune_cache[g_autotune_cache_count].filename));
-    (void)strlcpy(g_autotune_cache[g_autotune_cache_count].profile_str, profile_str,
+    (void)strlcpy(g_autotune_cache[g_autotune_cache_count].profile_str,
+                  profile_str,
                   sizeof(g_autotune_cache[g_autotune_cache_count].profile_str));
     g_autotune_cache_count++;
   }

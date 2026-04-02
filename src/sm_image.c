@@ -777,6 +777,7 @@ typedef struct {
   uint8_t playgo;
   uint8_t disc;
   bool include_ekpfs;
+  bool supports_noatime;
   uint8_t key_level;
 } pfs_nmount_profile_t;
 
@@ -929,6 +930,7 @@ static bool stage_a_attach_tuple(const char *file_path, off_t file_size,
 static bool stage_b_nmount_profile(const char *mount_point, const char *devname,
                                    bool mount_read_only, bool force_mount,
                                    const pfs_nmount_profile_t *np,
+                                   bool include_noatime,
                                    char *mount_errmsg, size_t errmsg_size,
                                    int *errno_out) {
   if (errno_out)
@@ -971,8 +973,10 @@ static bool stage_b_nmount_profile(const char *mount_point, const char *devname,
 
   iov[iovlen++] = (struct iovec)IOVEC_ENTRY("async");
   iov[iovlen++] = (struct iovec)IOVEC_ENTRY(NULL);
-  iov[iovlen++] = (struct iovec)IOVEC_ENTRY("noatime");
-  iov[iovlen++] = (struct iovec)IOVEC_ENTRY(NULL);
+  if (include_noatime) {
+    iov[iovlen++] = (struct iovec)IOVEC_ENTRY("noatime");
+    iov[iovlen++] = (struct iovec)IOVEC_ENTRY(NULL);
+  }
   iov[iovlen++] = (struct iovec)IOVEC_ENTRY("automounted");
   iov[iovlen++] = (struct iovec)IOVEC_ENTRY(NULL);
 
@@ -1021,6 +1025,7 @@ static void pfs_bruteforce_sleep(const pfs_bruteforce_state_t *state) {
 static void fill_mount_profile_from_tuple(mount_profile_t *profile,
                                           const pfs_attach_tuple_t *tuple,
                                           const pfs_nmount_profile_t *np,
+                                          bool supports_noatime,
                                           bool mount_read_only) {
   memset(profile, 0, sizeof(*profile));
   profile->io_version = LVD_ATTACH_IO_VERSION_V0;
@@ -1036,6 +1041,7 @@ static void fill_mount_profile_from_tuple(mount_profile_t *profile,
   profile->playgo = np->playgo;
   profile->disc = np->disc;
   profile->include_ekpfs = np->include_ekpfs;
+  profile->supports_noatime = supports_noatime;
   profile->mount_read_only = mount_read_only;
 }
 
@@ -1061,26 +1067,49 @@ static bool pfs_try_nmount_profile(pfs_bruteforce_state_t *state,
                                    int *unit_id_io, char *devname,
                                    size_t devname_size,
                                    mount_profile_t *winner_out) {
+  bool include_noatime = np->supports_noatime;
   char errmsg[256];
   int nmount_err = 0;
   bool ok = stage_b_nmount_profile(state->mount_point, devname,
                                    state->mount_read_only,
-                                   state->force_mount, np, errmsg,
+                                   state->force_mount, np, include_noatime,
                                    sizeof(errmsg), &nmount_err);
   g_pfs_global_attempts++;
-  log_debug("  [IMG][BRUTE] stage=B idx=%u tuple=(img=%u raw=0x%x sec=%u sec2=%u) opts=(fstype=%s budget=%s mkey=%s sig=%u playgo=%u disc=%u ekpfs=%d) result=%s errno=%d",
+  log_debug("  [IMG][BRUTE] stage=B idx=%u tuple=(img=%u raw=0x%x sec=%u sec2=%u) opts=(fstype=%s budget=%s mkey=%s sig=%u playgo=%u disc=%u ekpfs=%d noatime=%d) result=%s errno=%d",
             state->attempt_idx, tuple->image_type, tuple->raw_flags,
             tuple->sector_size, tuple->secondary_unit, np->fstype,
             np->budgetid ? np->budgetid : "-",
             np->mkeymode ? np->mkeymode : "-", np->sigverify, np->playgo,
-            np->disc, np->include_ekpfs ? 1 : 0,
+            np->disc, np->include_ekpfs ? 1 : 0, include_noatime ? 1 : 0,
             ok ? "NMOUNT_OK" : "NMOUNT_FAIL", nmount_err);
   state->attempt_idx++;
+
+  if (!ok && nmount_err == EINVAL && include_noatime) {
+    int retry_err = 0;
+    bool retry_ok = stage_b_nmount_profile(state->mount_point, devname,
+                                           state->mount_read_only,
+                                           state->force_mount, np, false,
+                                           errmsg, sizeof(errmsg), &retry_err);
+    g_pfs_global_attempts++;
+    log_debug("  [IMG][BRUTE] stage=B idx=%u retry=(drop-noatime) tuple=(img=%u raw=0x%x sec=%u sec2=%u) opts=(fstype=%s budget=%s mkey=%s sig=%u playgo=%u disc=%u ekpfs=%d noatime=0) result=%s errno=%d",
+              state->attempt_idx, tuple->image_type, tuple->raw_flags,
+              tuple->sector_size, tuple->secondary_unit, np->fstype,
+              np->budgetid ? np->budgetid : "-",
+              np->mkeymode ? np->mkeymode : "-", np->sigverify, np->playgo,
+              np->disc, np->include_ekpfs ? 1 : 0,
+              retry_ok ? "NMOUNT_OK" : "NMOUNT_FAIL", retry_err);
+    state->attempt_idx++;
+
+    ok = retry_ok;
+    nmount_err = retry_err;
+    include_noatime = false;
+  }
 
   if (ok && validate_mounted_image(state->file_path, state->fs_type,
                                    ATTACH_BACKEND_LVD, *unit_id_io, devname,
                                    state->mount_point)) {
     fill_mount_profile_from_tuple(winner_out, tuple, np,
+                                  include_noatime,
                                   state->mount_read_only);
     return true;
   }
@@ -1111,6 +1140,7 @@ static bool pfs_try_attached_tuple_profiles(pfs_bruteforce_state_t *state,
        .playgo = 0,
        .disc = 0,
        .include_ekpfs = true,
+        .supports_noatime = true,
        .key_level = 3},
       {.fstype = "pfs",
        .budgetid = DEVPFS_BUDGET_GAME,
@@ -1119,6 +1149,7 @@ static bool pfs_try_attached_tuple_profiles(pfs_bruteforce_state_t *state,
        .playgo = 0,
        .disc = 0,
        .include_ekpfs = true,
+      .supports_noatime = true,
        .key_level = 3},
       {.fstype = "pfs",
        .budgetid = DEVPFS_BUDGET_GAME,
@@ -1127,6 +1158,7 @@ static bool pfs_try_attached_tuple_profiles(pfs_bruteforce_state_t *state,
        .playgo = 0,
        .disc = 0,
        .include_ekpfs = true,
+      .supports_noatime = true,
        .key_level = 3},
       {.fstype = "pfs",
        .budgetid = DEVPFS_BUDGET_SYSTEM,
@@ -1135,6 +1167,7 @@ static bool pfs_try_attached_tuple_profiles(pfs_bruteforce_state_t *state,
        .playgo = 0,
        .disc = 0,
        .include_ekpfs = true,
+      .supports_noatime = true,
        .key_level = 3},
       {.fstype = "pfs",
        .budgetid = DEVPFS_BUDGET_GAME,
@@ -1143,6 +1176,7 @@ static bool pfs_try_attached_tuple_profiles(pfs_bruteforce_state_t *state,
        .playgo = 0,
        .disc = 0,
        .include_ekpfs = false,
+      .supports_noatime = true,
        .key_level = 3},
       {.fstype = "pfs",
        .budgetid = DEVPFS_BUDGET_GAME,
@@ -1151,6 +1185,7 @@ static bool pfs_try_attached_tuple_profiles(pfs_bruteforce_state_t *state,
        .playgo = 0,
        .disc = 0,
        .include_ekpfs = true,
+      .supports_noatime = true,
        .key_level = 3},
       {.fstype = "pfs",
        .budgetid = DEVPFS_BUDGET_GAME,
@@ -1159,6 +1194,7 @@ static bool pfs_try_attached_tuple_profiles(pfs_bruteforce_state_t *state,
        .playgo = 1,
        .disc = 0,
        .include_ekpfs = true,
+      .supports_noatime = true,
        .key_level = 3},
       {.fstype = "pfs",
        .budgetid = DEVPFS_BUDGET_GAME,
@@ -1167,6 +1203,7 @@ static bool pfs_try_attached_tuple_profiles(pfs_bruteforce_state_t *state,
        .playgo = 0,
        .disc = 1,
        .include_ekpfs = true,
+      .supports_noatime = true,
        .key_level = 3},
   };
   static const char *k_fallback_fstypes[] = {"ppr_pfs", "transaction_pfs"};
@@ -1208,6 +1245,7 @@ static bool pfs_try_attached_tuple_profiles(pfs_bruteforce_state_t *state,
           .playgo = 0,
           .disc = 0,
           .include_ekpfs = false,
+            .supports_noatime = true,
           .key_level = key_level,
       };
       int unit_before_attempt = *unit_id_io;
@@ -1386,15 +1424,30 @@ bool mount_image(const char *file_path, image_fs_type_t fs_type) {
             .sigverify = cached_profile.sigverify,
             .playgo = cached_profile.playgo,
             .disc = cached_profile.disc,
-          .include_ekpfs = cached_profile.include_ekpfs,
+            .include_ekpfs = cached_profile.include_ekpfs,
+            .supports_noatime = cached_profile.supports_noatime,
             .key_level = 3,
         };
-        if (stage_b_nmount_profile(mount_point, devname, mount_read_only,
-                                   force_mount, &cp, cached_errmsg,
-                                   sizeof(cached_errmsg), &nmount_err) &&
-            validate_mounted_image(file_path, fs_type, ATTACH_BACKEND_LVD,
-                                   unit_id, devname, mount_point)) {
-          log_debug("  [IMG][BRUTE] cached winner reused: %s", file_path);
+        bool cached_ok = stage_b_nmount_profile(
+            mount_point, devname, mount_read_only, force_mount, &cp,
+            cp.supports_noatime, cached_errmsg, sizeof(cached_errmsg),
+            &nmount_err);
+        bool cached_used_noatime = cp.supports_noatime;
+        if (!cached_ok && nmount_err == EINVAL && cached_used_noatime) {
+          cached_ok = stage_b_nmount_profile(
+              mount_point, devname, mount_read_only, force_mount, &cp, false,
+              cached_errmsg, sizeof(cached_errmsg), &nmount_err);
+          cached_used_noatime = false;
+        }
+        if (cached_ok && validate_mounted_image(file_path, fs_type,
+                                                ATTACH_BACKEND_LVD, unit_id,
+                                                devname, mount_point)) {
+          if (cached_profile.supports_noatime != cached_used_noatime) {
+            cached_profile.supports_noatime = cached_used_noatime;
+            (void)cache_mount_profile(filename_local, &cached_profile);
+          }
+          log_debug("  [IMG][BRUTE] cached winner reused: %s (noatime=%d)",
+                    file_path, cached_used_noatime ? 1 : 0);
           goto mount_success;
         }
         (void)unmount_image(file_path, unit_id, ATTACH_BACKEND_LVD);
@@ -1410,7 +1463,7 @@ bool mount_image(const char *file_path, image_fs_type_t fs_type) {
     static const uint16_t k_primary_raw_flags[] = {0x9, 0x8};
     static const uint16_t k_last_resort_raw_flags[] = {0xD, 0xC};
     static const uint16_t k_primary_image_types[] = {0, 5};
-    static const uint32_t k_sector_candidates[] = {65536u, 32768u, 4096u};
+    static const uint32_t k_sector_candidates[] = {4096u};
     static const pfs_attach_pass_t k_attach_passes[] = {
         {.image_types = k_fast_image_types,
          .image_type_count = sizeof(k_fast_image_types) / sizeof(k_fast_image_types[0]),
@@ -1444,14 +1497,6 @@ bool mount_image(const char *file_path, image_fs_type_t fs_type) {
          .sector_size_count = sizeof(k_sector_candidates) / sizeof(k_sector_candidates[0]),
          .force_secondary_65536 = false,
          .label = "expand-img5"},
-        {.image_types = k_primary_image_types,
-         .image_type_count = sizeof(k_primary_image_types) / sizeof(k_primary_image_types[0]),
-         .raw_flags = k_primary_raw_flags,
-         .raw_flag_count = sizeof(k_primary_raw_flags) / sizeof(k_primary_raw_flags[0]),
-         .sector_sizes = k_sector_candidates,
-         .sector_size_count = sizeof(k_sector_candidates) / sizeof(k_sector_candidates[0]),
-         .force_secondary_65536 = true,
-         .label = "sec2-65536"},
         {.image_types = k_secondary_image_types,
          .image_type_count = sizeof(k_secondary_image_types) / sizeof(k_secondary_image_types[0]),
          .raw_flags = k_primary_raw_flags,
@@ -1503,13 +1548,14 @@ bool mount_image(const char *file_path, image_fs_type_t fs_type) {
 
     if (mounted) {
       (void)cache_mount_profile(filename_local, &winner);
-      log_debug("  [IMG][BRUTE] winner selected: img=%u raw=0x%x flags=0x%x sec=%u sec2=%u fstype=%s budget=%s mkey=%s ekpfs=%u",
+      log_debug("  [IMG][BRUTE] winner selected: img=%u raw=0x%x flags=0x%x sec=%u sec2=%u fstype=%s budget=%s mkey=%s ekpfs=%u noatime=%u",
                 winner.image_type, winner.raw_flags, winner.normalized_flags,
                 winner.sector_size, winner.secondary_unit,
                 winner.fstype ? winner.fstype : "pfs",
                 winner.budgetid ? winner.budgetid : DEVPFS_BUDGET_GAME,
                 winner.mkeymode ? winner.mkeymode : DEVPFS_MKEYMODE_SD,
-                winner.include_ekpfs ? 1u : 0u);
+            winner.include_ekpfs ? 1u : 0u,
+            winner.supports_noatime ? 1u : 0u);
       notify_system_info("PFS mounted:\n%s", file_path);
       attach_backend = ATTACH_BACKEND_LVD;
       goto mount_success;

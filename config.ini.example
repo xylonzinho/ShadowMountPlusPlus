@@ -125,7 +125,7 @@ pfs_bruteforce_cooldown_seconds=300
 pfs_bruteforce_max_global_attempts=200
 
 # Optional list overrides (currently advisory; parser accepts these keys):
-pfs_bruteforce_sector_sizes=65536,32768,4096
+pfs_bruteforce_sector_sizes=4096
 pfs_bruteforce_image_types=0,5,2,3,4,6,1,7
 pfs_bruteforce_raw_flags=0x9,0x8,0xD,0xC
 pfs_bruteforce_fstypes=pfs,ppr_pfs,transaction_pfs

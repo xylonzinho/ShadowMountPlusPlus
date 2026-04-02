@@ -47,6 +47,9 @@ typedef struct {
 
   // Whether the ekpfs key should be included for this attempt.
   bool include_ekpfs;
+
+  // Whether noatime should be included in nmount options.
+  bool supports_noatime;
   
   // Read-only mode flag
   bool mount_read_only;
