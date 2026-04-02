@@ -135,3 +135,23 @@ pfs_bruteforce_fstypes=pfs,ppr_pfs,transaction_pfs
 # The cache section line format is:
 #   mount_profile=<image_filename>:<profile_data>
 
+# Optional probe mode: discover and store all working PFS profiles for each
+# image into a dedicated file:
+#   /data/shadowmount/pfs_probe_<image_filename>.ini
+# Disabled by default because it performs extra mount/unmount attempts.
+pfs_probe_enabled=0
+
+# Optional benchmark mode: after mounting PFS via brute-force/profile cache,
+# benchmark one discovered profile per run and persist progress in:
+#   /data/shadowmount/benchmarking.ini
+# This allows resuming after crash/reboot from the last tested profile.
+pfs_bench_enabled=0
+
+# Benchmark file read size target in bytes (minimum total bytes read per test
+# file, chunked internally in 64 KiB reads).
+pfs_bench_min_read_bytes=65536
+
+# Benchmark slow-read threshold in milliseconds. Reads or read gaps over this
+# threshold are counted as delays in the report.
+pfs_bench_delay_threshold_ms=500
+

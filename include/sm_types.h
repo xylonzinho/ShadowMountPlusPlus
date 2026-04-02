@@ -136,6 +136,14 @@ typedef struct runtime_config {
   char pfs_bruteforce_image_types[64];
   char pfs_bruteforce_raw_flags[64];
   char pfs_bruteforce_fstypes[64];
+  // Probe mode: collect ALL working mount profiles (disabled by default)
+  bool pfs_probe_enabled;
+  // Benchmark mode: measure read performance for each working profile (disabled by default)
+  bool pfs_bench_enabled;
+  // Minimum bytes to read per benchmark test file (default 65536)
+  uint32_t pfs_bench_min_read_bytes;
+  // Read latency threshold in ms above which a read counts as slow (default 500)
+  uint32_t pfs_bench_delay_threshold_ms;
 } runtime_config_t;
 
 typedef enum {
