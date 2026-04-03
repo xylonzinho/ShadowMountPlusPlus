@@ -44,6 +44,7 @@
 // The normalized masks are then checked against validator constraints (0x82/0x92).
 #define LVD_ATTACH_IMAGE_TYPE_SINGLE 0
 #define LVD_ATTACH_IMAGE_TYPE_UFS_DOWNLOAD_DATA 7
+#define LVD_ATTACH_IMAGE_TYPE_PFS_PPR_CANDIDATE 1
 #define LVD_ATTACH_IMAGE_TYPE_PFS_SAVE_DATA 5
 // EXPERIMENT: Increase layer array size (from 3 to 6) to test if larger buffer affects eboot detection
 // Keep layer_count=1 since we only have a single PFS image file
