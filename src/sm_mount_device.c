@@ -112,6 +112,52 @@ bool is_active_image_mount_point(const char *path) {
   return is_path_mountpoint(path);
 }
 
+static void log_lvd_mount_snapshot(const char *reason_tag) {
+  struct statfs *mntbuf = NULL;
+  int mntcount = getmntinfo(&mntbuf, MNT_NOWAIT);
+  if (mntcount <= 0 || !mntbuf)
+    return;
+
+  for (int i = 0; i < mntcount; i++) {
+    if (strncmp(mntbuf[i].f_mntfromname, "/dev/lvd", 8) != 0)
+      continue;
+    if (reason_tag && reason_tag[0] != '\0') {
+      log_debug("  [IMG][LVD] mounted(%s): from=%s path=%s type=%s "
+                "bsize=%llu iosize=%llu blocks=%llu bfree=%llu "
+                "bavail=%llu files=%llu ffree=%llu flags=0x%lX",
+                reason_tag, mntbuf[i].f_mntfromname, mntbuf[i].f_mntonname,
+                mntbuf[i].f_fstypename,
+                (unsigned long long)(uint64_t)mntbuf[i].f_bsize,
+                (unsigned long long)(uint64_t)mntbuf[i].f_iosize,
+                (unsigned long long)(uint64_t)mntbuf[i].f_blocks,
+                (unsigned long long)(uint64_t)mntbuf[i].f_bfree,
+                (unsigned long long)(uint64_t)mntbuf[i].f_bavail,
+                (unsigned long long)(uint64_t)mntbuf[i].f_files,
+                (unsigned long long)(uint64_t)mntbuf[i].f_ffree,
+                (unsigned long)mntbuf[i].f_flags);
+      continue;
+    }
+
+    log_debug("  [IMG][LVD] mounted: from=%s path=%s type=%s "
+              "bsize=%llu iosize=%llu blocks=%llu bfree=%llu "
+              "bavail=%llu files=%llu ffree=%llu flags=0x%lX",
+              mntbuf[i].f_mntfromname, mntbuf[i].f_mntonname,
+              mntbuf[i].f_fstypename,
+              (unsigned long long)(uint64_t)mntbuf[i].f_bsize,
+              (unsigned long long)(uint64_t)mntbuf[i].f_iosize,
+              (unsigned long long)(uint64_t)mntbuf[i].f_blocks,
+              (unsigned long long)(uint64_t)mntbuf[i].f_bfree,
+              (unsigned long long)(uint64_t)mntbuf[i].f_bavail,
+              (unsigned long long)(uint64_t)mntbuf[i].f_files,
+              (unsigned long long)(uint64_t)mntbuf[i].f_ffree,
+              (unsigned long)mntbuf[i].f_flags);
+  }
+}
+
+void log_active_lvd_mounts(const char *reason_tag) {
+  log_lvd_mount_snapshot(reason_tag);
+}
+
 bool wait_for_lvd_release(void) {
   for (unsigned int waited_us = 0;; waited_us += LVD_RELEASE_WAIT_POLL_US) {
     struct statfs *mntbuf = NULL;
@@ -131,23 +177,7 @@ bool wait_for_lvd_release(void) {
 
     if (waited_us == 0) {
       log_debug("  [IMG][LVD] waiting for /dev/lvd2 to be released...");
-      for (int i = 0; i < mntcount && mntbuf; i++) {
-        if (strncmp(mntbuf[i].f_mntfromname, "/dev/lvd", 8) != 0)
-          continue;
-        log_debug("  [IMG][LVD] mounted: from=%s path=%s type=%s "
-                  "bsize=%llu iosize=%llu blocks=%llu bfree=%llu "
-                  "bavail=%llu files=%llu ffree=%llu flags=0x%lX",
-                  mntbuf[i].f_mntfromname, mntbuf[i].f_mntonname,
-                  mntbuf[i].f_fstypename,
-                  (unsigned long long)(uint64_t)mntbuf[i].f_bsize,
-                  (unsigned long long)(uint64_t)mntbuf[i].f_iosize,
-                  (unsigned long long)(uint64_t)mntbuf[i].f_blocks,
-                  (unsigned long long)(uint64_t)mntbuf[i].f_bfree,
-                  (unsigned long long)(uint64_t)mntbuf[i].f_bavail,
-                  (unsigned long long)(uint64_t)mntbuf[i].f_files,
-                  (unsigned long long)(uint64_t)mntbuf[i].f_ffree,
-                  (unsigned long)mntbuf[i].f_flags);
-      }
+      log_lvd_mount_snapshot(NULL);
     }
     if (should_stop_requested())
       return false;

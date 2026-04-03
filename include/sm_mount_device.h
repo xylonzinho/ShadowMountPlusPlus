@@ -19,6 +19,8 @@ bool resolve_device_from_mount(const char *mount_point,
 bool is_active_image_mount_point(const char *path);
 // Wait until /dev/lvd2 is no longer mounted during startup.
 bool wait_for_lvd_release(void);
+// Log currently active /dev/lvd* mounts and their statfs details.
+void log_active_lvd_mounts(const char *reason_tag);
 // Detach a previously attached MD or LVD unit.
 bool detach_attached_unit(attach_backend_t backend, int unit_id);
 
