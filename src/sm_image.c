@@ -378,6 +378,8 @@ static bool attach_lvd_backend(const char *file_path, image_fs_type_t fs_type,
             attach_backend_name(ATTACH_BACKEND_LVD), unit_id);
 
   snprintf(devname_out, devname_size, "/dev/lvd%d", unit_id);
+  log_debug("  [IMG][%s] Attached as %s from image: %s",
+            attach_backend_name(attach_backend), devname_out, file_path);
   if (!wait_for_dev_node_state(devname_out, true)) {
     log_debug("  [IMG][%s] device node did not appear: %s",
               attach_backend_name(ATTACH_BACKEND_LVD), devname_out);
@@ -660,33 +662,50 @@ static bool perform_image_nmount(const char *file_path, image_fs_type_t fs_type,
       get_nmount_flags(fs_type, mount_read_only, &mount_mode);
 
   // For PFS, try each mkeymode in order: GD -> SD -> AC.
+  // Also try with sigverify enabled first, then disabled as fallback.
   // Keep retrying through all modes even after non-EPROTONOSUPPORT failures,
   // because behavior can differ by firmware/content and mode combination.
   if (fs_type == IMAGE_FS_PFS) {
     static const char *const pfs_mkeymodes[] = {
         DEVPFS_MKEYMODE_GD, DEVPFS_MKEYMODE_SD, DEVPFS_MKEYMODE_AC};
+    static const char *const pfs_sigverifies[] = {"1", "0"};
     int pfs_mount_errno = 0;
-    for (unsigned int mi = 0; mi < 3; mi++) {
-      // iov_pfs[9] is the mkeymode value slot
-      iov_pfs[9].iov_base = (void *)pfs_mkeymodes[mi];
-      iov_pfs[9].iov_len  = strlen(pfs_mkeymodes[mi]) + 1;
-      memset(mount_errmsg, 0, sizeof(mount_errmsg));
-      log_debug("  [IMG][%s] PFS ro=%d budgetid=%s mkeymode=%s "
-            "attempt_mkeymode=%s sigverify=%s playgo=%s disc=%s "
-        "ekpfs=zero",
-            attach_backend_name(attach_backend), mount_read_only ? 1 : 0,
-            PFS_MOUNT_BUDGET_ID, PFS_MOUNT_MKEYMODE, pfs_mkeymodes[mi],
-            sigverify, playgo, disc);
-      if (nmount(iov, iovlen, (int)mount_flags) == 0)
-        return true;
-      pfs_mount_errno = errno;
-      if (mount_errmsg[0] != '\0')
-        log_debug("  [IMG][%s] nmount %s mkeymode=%s errmsg: %s",
+
+    for (unsigned int si = 0; si < 2; si++) {
+      const char *sigverify_attempt = pfs_sigverifies[si];
+      for (unsigned int mi = 0; mi < 3; mi++) {
+        // iov_pfs[7] is the sigverify value slot
+        // iov_pfs[9] is the mkeymode value slot
+        iov_pfs[7].iov_base = (void *)sigverify_attempt;
+        iov_pfs[7].iov_len  = strlen(sigverify_attempt) + 1;
+        iov_pfs[9].iov_base = (void *)pfs_mkeymodes[mi];
+        iov_pfs[9].iov_len  = strlen(pfs_mkeymodes[mi]) + 1;
+        memset(mount_errmsg, 0, sizeof(mount_errmsg));
+        log_debug("  [IMG][%s] PFS ro=%d budgetid=%s mkeymode=%s "
+              "attempt_mkeymode=%s sigverify=%s playgo=%s disc=%s "
+          "ekpfs=zero",
+              attach_backend_name(attach_backend), mount_read_only ? 1 : 0,
+              PFS_MOUNT_BUDGET_ID, PFS_MOUNT_MKEYMODE, pfs_mkeymodes[mi],
+              sigverify_attempt, playgo, disc);
+        if (nmount(iov, iovlen, (int)mount_flags) == 0) {
+          log_debug("  [IMG][%s] PFS mount successful with sigverify=%s "
+                    "mkeymode=%s", attach_backend_name(attach_backend),
+                    sigverify_attempt, pfs_mkeymodes[mi]);
+          return true;
+        }
+        pfs_mount_errno = errno;
+        if (mount_errmsg[0] != '\0')
+          log_debug("  [IMG][%s] nmount %s sigverify=%s mkeymode=%s errmsg: %s",
+                    attach_backend_name(attach_backend), mount_mode,
+                    sigverify_attempt, pfs_mkeymodes[mi], mount_errmsg);
+        log_debug("  [IMG][%s] nmount %s sigverify=%s mkeymode=%s failed: %s",
                   attach_backend_name(attach_backend), mount_mode,
-                  pfs_mkeymodes[mi], mount_errmsg);
-      log_debug("  [IMG][%s] nmount %s mkeymode=%s failed: %s",
-                attach_backend_name(attach_backend), mount_mode,
-                pfs_mkeymodes[mi], strerror(pfs_mount_errno));
+                  sigverify_attempt, pfs_mkeymodes[mi], strerror(pfs_mount_errno));
+      }
+      if (si == 0) {
+        log_debug("  [IMG][%s] All sigverify=1 attempts failed, trying "
+                  "sigverify=0 fallback", attach_backend_name(attach_backend));
+      }
     }
     (void)detach_attached_unit(attach_backend, unit_id);
     errno = pfs_mount_errno;
