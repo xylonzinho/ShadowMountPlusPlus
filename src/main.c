@@ -49,8 +49,42 @@ static immediate_scan_request_t g_scan_now = {
     .reason = {0},
 };
 
+static void append_emergency_log_line(const char *line) {
+  int fd = open(LOG_FILE, O_WRONLY | O_APPEND | O_CREAT, 0666);
+  if (fd < 0)
+    return;
+  (void)write(fd, line, strlen(line));
+  (void)write(fd, "\n", 1);
+  (void)fsync(fd);
+  (void)close(fd);
+}
+
+static bool is_fatal_signal(int sig) {
+  return sig == SIGSEGV || sig == SIGBUS || sig == SIGILL || sig == SIGFPE;
+}
+
 static void on_signal(int sig) {
-  (void)sig;
+  if (is_fatal_signal(sig)) {
+    switch (sig) {
+    case SIGSEGV:
+      append_emergency_log_line("[CRASH] fatal signal SIGSEGV");
+      break;
+    case SIGBUS:
+      append_emergency_log_line("[CRASH] fatal signal SIGBUS");
+      break;
+    case SIGILL:
+      append_emergency_log_line("[CRASH] fatal signal SIGILL");
+      break;
+    case SIGFPE:
+      append_emergency_log_line("[CRASH] fatal signal SIGFPE");
+      break;
+    default:
+      append_emergency_log_line("[CRASH] fatal signal (unknown)");
+      break;
+    }
+    _exit(128 + sig);
+  }
+
   g_stop_requested = 1;
   sm_scanner_wake();
 }
@@ -65,6 +99,10 @@ void install_signal_handlers(void) {
   sigaction(SIGHUP, &sa, NULL);
   sigaction(SIGQUIT, &sa, NULL);
   sigaction(SIGABRT, &sa, NULL);
+  sigaction(SIGSEGV, &sa, NULL);
+  sigaction(SIGBUS, &sa, NULL);
+  sigaction(SIGILL, &sa, NULL);
+  sigaction(SIGFPE, &sa, NULL);
 }
 
 bool should_stop_requested(void) {
@@ -330,6 +368,7 @@ int main(void) {
 
   (void)unlink(LOG_FILE_PREV);
   (void)rename(LOG_FILE, LOG_FILE_PREV);
+  append_emergency_log_line("[BOOT] startup marker before scanner init");
   if (!sm_scanner_init())
     log_debug("  [SCAN] scanner service init incomplete; steady-state scanner will stop if initialization cannot be completed");
 

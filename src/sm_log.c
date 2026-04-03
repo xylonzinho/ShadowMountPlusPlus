@@ -253,6 +253,9 @@ static FILE *ensure_log_file_open_locked(void) {
   if (!g_log_file)
     return NULL;
 
+  // Keep logs durable across hard crashes by avoiding stdio buffering.
+  (void)setvbuf(g_log_file, NULL, _IONBF, 0);
+
   return g_log_file;
 }
 
@@ -275,6 +278,9 @@ static void log_to_file_locked(const char *fmt, va_list args) {
   vfprintf(fp, fmt, args_file);
   fputc('\n', fp);
   fflush(fp);
+  int log_fd = fileno(fp);
+  if (log_fd >= 0)
+    (void)fsync(log_fd);
   va_end(args_file);
 }
 
