@@ -379,7 +379,7 @@ static bool attach_lvd_backend(const char *file_path, image_fs_type_t fs_type,
 
   snprintf(devname_out, devname_size, "/dev/lvd%d", unit_id);
   log_debug("  [IMG][%s] Attached as %s from image: %s",
-            attach_backend_name(attach_backend), devname_out, file_path);
+            attach_backend_name(ATTACH_BACKEND_LVD), devname_out, file_path);
   if (!wait_for_dev_node_state(devname_out, true)) {
     log_debug("  [IMG][%s] device node did not appear: %s",
               attach_backend_name(ATTACH_BACKEND_LVD), devname_out);
