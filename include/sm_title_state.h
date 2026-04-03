@@ -10,6 +10,8 @@ bool was_register_attempted(const char *title_id);
 uint8_t get_register_attempts(const char *title_id);
 // Record a registration attempt for a title.
 void mark_register_attempted(const char *title_id);
+// Clear registration attempts for a title.
+void clear_register_attempted(const char *title_id);
 // Notify once about duplicate title IDs from different paths.
 void notify_duplicate_title_once(const char *title_id, const char *path_a,
                                  const char *path_b);

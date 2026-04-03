@@ -123,6 +123,12 @@ void mark_register_attempted(const char *title_id) {
     entry->register_attempts++;
 }
 
+void clear_register_attempted(const char *title_id) {
+  struct TitleStateEntry *entry = find_title_state(title_id);
+  if (entry)
+    entry->register_attempts = 0;
+}
+
 void notify_duplicate_title_once(const char *title_id, const char *path_a,
                                  const char *path_b) {
   struct TitleStateEntry *entry = get_or_create_title_state(title_id);

@@ -82,6 +82,100 @@ static bool copy_sce_sys_to_appmeta(const char *src_sce_sys,
   return ok;
 }
 
+static int remove_path_tree(const char *path) {
+  struct stat st;
+  if (!path || path[0] == '\0')
+    return 0;
+  if (lstat(path, &st) != 0)
+    return (errno == ENOENT) ? 0 : -1;
+
+  if (!S_ISDIR(st.st_mode) || S_ISLNK(st.st_mode)) {
+    if (unlink(path) != 0 && errno != ENOENT)
+      return -1;
+    return 0;
+  }
+
+  DIR *d = opendir(path);
+  if (!d)
+    return -1;
+
+  int ret = 0;
+  struct dirent *e;
+  while ((e = readdir(d)) != NULL) {
+    char child[MAX_PATH];
+    if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0)
+      continue;
+    snprintf(child, sizeof(child), "%s/%s", path, e->d_name);
+    if (remove_path_tree(child) != 0) {
+      ret = -1;
+      break;
+    }
+  }
+
+  if (closedir(d) != 0)
+    ret = -1;
+  if (ret == 0 && rmdir(path) != 0 && errno != ENOENT)
+    ret = -1;
+  return ret;
+}
+
+static void rollback_title_mount_stack(const char *title_id) {
+  char system_path[MAX_PATH];
+  snprintf(system_path, sizeof(system_path), "/system_ex/app/%s", title_id);
+  for (int i = 0; i < 12; i++) {
+    if (unmount(system_path, 0) == 0)
+      continue;
+    if (errno == ENOENT || errno == EINVAL)
+      break;
+    if (errno == EBUSY) {
+      if (unmount(system_path, MNT_FORCE) == 0)
+        continue;
+      if (errno == ENOENT || errno == EINVAL)
+        break;
+    }
+    log_debug("  [ROLLBACK] unmount failed for %s: %s", system_path,
+              strerror(errno));
+    break;
+  }
+}
+
+static void rollback_install_attempt(const char *title_id,
+                                     const char *effective_src_path,
+                                     const char *user_app_dir,
+                                     const char *user_appmeta_dir,
+                                     bool nullfs_mounted,
+                                     bool register_attempt_marked,
+                                     bool remove_staging_dirs,
+                                     const char *reason) {
+  log_debug("  [ROLLBACK] begin title=%s reason=%s", title_id,
+            reason ? reason : "unknown");
+
+  if (effective_src_path && effective_src_path[0] != '\0') {
+    cleanup_mount_links(effective_src_path, true);
+  }
+  if (nullfs_mounted) {
+    rollback_title_mount_stack(title_id);
+  }
+
+  if (register_attempt_marked) {
+    clear_register_attempted(title_id);
+    log_debug("  [ROLLBACK] cleared register attempts for %s", title_id);
+  }
+
+  if (remove_staging_dirs) {
+    if (remove_path_tree(user_app_dir) != 0 && errno != ENOENT) {
+      log_debug("  [ROLLBACK] remove failed for %s: %s", user_app_dir,
+                strerror(errno));
+    }
+    if (remove_path_tree(user_appmeta_dir) != 0 && errno != ENOENT) {
+      log_debug("  [ROLLBACK] remove failed for %s: %s", user_appmeta_dir,
+                strerror(errno));
+    }
+  }
+
+  log_debug("  [ROLLBACK] completed title=%s", title_id);
+}
+
 static bool validate_install_source(const char *src_path, const char *title_id) {
   char src_eboot[MAX_PATH];
   char src_param_json[MAX_PATH];
@@ -211,8 +305,6 @@ static bool register_title(const char *src_path, const char *title_id,
   }
 
   log_debug("  [REG] begin title=%s base=%s", title_id, APP_BASE "/");
-  log_debug("  [STEP][REG] mark register attempted");
-  mark_register_attempted(title_id);
   log_debug("  [STEP][REG] calling sceAppInstUtilAppInstallTitleDir");
   int res = sceAppInstUtilAppInstallTitleDir(title_id, APP_BASE "/", 0);
   log_debug("  [REG] result title=%s code=0x%08X", title_id, (uint32_t)res);
@@ -274,6 +366,10 @@ static bool mount_and_install(const char *src_path, const char *title_id,
   bool image_mount_source = is_under_image_mount_base(src_path);
   char resolved_src_path[MAX_PATH];
   const char *effective_src_path = src_path;
+  bool nullfs_mounted = false;
+  bool register_attempt_marked = false;
+  bool remove_staging_dirs = false;
+  const char *rollback_reason = NULL;
 
   log_debug("  [STEP][FLOW] begin title=%s remount=%d should_register=%d src=%s",
             title_id, is_remount ? 1 : 0, should_register ? 1 : 0, src_path);
@@ -300,10 +396,10 @@ static bool mount_and_install(const char *src_path, const char *title_id,
   }
 
   if (!validate_install_source(effective_src_path, title_id)) {
-    log_debug("  [STEP][VAL] validation reported issues, continuing flow anyway");
-  } else {
-    log_debug("  [STEP][FLOW] source validation passed");
+    rollback_reason = "source validation";
+    goto rollback;
   }
+  log_debug("  [STEP][FLOW] source validation passed");
 
   if (image_mount_source) {
     log_debug("  [STEP][FLOW] image-backed source detected");
@@ -343,6 +439,7 @@ static bool mount_and_install(const char *src_path, const char *title_id,
   }
 
   if (restage_staging) {
+    remove_staging_dirs = !is_remount;
     log_debug("  [STEP][COPY] staging start");
     mkdir(APP_BASE, 0777);
     mkdir(user_app_dir, 0777);
@@ -353,7 +450,8 @@ static bool mount_and_install(const char *src_path, const char *title_id,
     if (!copy_sce_sys_to_appmeta(src_sce_sys, user_sce_sys)) {
       log_debug("  [COPY] Failed to copy sce_sys metadata staging: %s -> %s",
                 src_sce_sys, user_sce_sys);
-      return false;
+      rollback_reason = "copy staging metadata";
+      goto rollback;
     }
 
     char icon_src[MAX_PATH];
@@ -364,19 +462,23 @@ static bool mount_and_install(const char *src_path, const char *title_id,
     if (copy_file(icon_src, icon_dst) != 0) {
       log_debug("  [COPY] Failed to copy staged icon: %s -> %s", icon_src,
                 icon_dst);
-      return false;
+      rollback_reason = "copy staged icon";
+      goto rollback;
     }
     log_debug("  [STEP][COPY] staging complete");
   }
 
   if (restage_appmeta) {
+    if (!is_remount)
+      remove_staging_dirs = true;
     log_debug("  [STEP][COPY] appmeta staging start");
     mkdir(APPMETA_BASE, 0777);
     mkdir(user_appmeta_dir, 0777);
     if (!copy_sce_sys_to_appmeta(src_sce_sys, user_appmeta_dir)) {
       log_debug("  [COPY] Failed to copy appmeta files: %s -> %s", src_sce_sys,
                 user_appmeta_dir);
-      return false;
+      rollback_reason = "copy appmeta files";
+      goto rollback;
     }
     metadata_restaged = true;
     log_debug("  [STEP][COPY] appmeta staging complete");
@@ -387,8 +489,10 @@ static bool mount_and_install(const char *src_path, const char *title_id,
   if (!mount_title_nullfs(title_id, effective_src_path)) {
     log_debug("  [LINK] nullfs mount failed: title=%s src=%s", title_id,
               effective_src_path);
-    return false;
+    rollback_reason = "mount nullfs";
+    goto rollback;
   }
+  nullfs_mounted = true;
   log_debug("  [STEP][MOUNT] nullfs mounted");
 
   // WRITE TRACKER
@@ -397,8 +501,10 @@ static bool mount_and_install(const char *src_path, const char *title_id,
   mkdir(user_app_dir, 0777);
   snprintf(lnk_path, sizeof(lnk_path), "%s/mount.lnk", user_app_dir);
   log_debug("  [STEP][LINK] writing mount link %s", lnk_path);
-  if (!write_link_file(lnk_path, effective_src_path))
-    return false;
+  if (!write_link_file(lnk_path, effective_src_path)) {
+    rollback_reason = "write mount link";
+    goto rollback;
+  }
 
   log_debug("  [LINK] mount.lnk created: %s -> %s", lnk_path,
             effective_src_path);
@@ -409,8 +515,10 @@ static bool mount_and_install(const char *src_path, const char *title_id,
   if (has_image_source) {
     log_debug("  [STEP][LINK] writing image link %s -> %s", img_lnk_path,
               image_source_path);
-    if (!write_link_file(img_lnk_path, image_source_path))
-      return false;
+    if (!write_link_file(img_lnk_path, image_source_path)) {
+      rollback_reason = "write image mount link";
+      goto rollback;
+    }
     log_debug("  [LINK] mount_img.lnk created: %s -> %s", img_lnk_path,
               image_source_path);
     if (!cache_image_source_mapping(image_source_path, effective_src_path)) {
@@ -441,13 +549,26 @@ static bool mount_and_install(const char *src_path, const char *title_id,
   log_debug("  [STEP][REG] pre-install settle delay start");
   sceKernelUsleep(300000);
   log_debug("  [STEP][REG] pre-install settle delay done");
+
+  log_debug("  [STEP][REG] mark register attempted");
+  mark_register_attempted(title_id);
+  register_attempt_marked = true;
+
   if (!register_title(effective_src_path, title_id, title_name, metadata_restaged,
                       has_src_snd0)) {
-    return false;
+    rollback_reason = "register title";
+    goto rollback;
   }
 
   log_debug("  [STEP][FLOW] completed title=%s", title_id);
   return true;
+
+rollback:
+  rollback_install_attempt(title_id, effective_src_path, user_app_dir,
+                           user_appmeta_dir, nullfs_mounted,
+                           register_attempt_marked, remove_staging_dirs,
+                           rollback_reason);
+  return false;
 }
 
 // --- Execution (per discovered candidate) ---
