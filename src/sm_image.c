@@ -454,25 +454,50 @@ static bool attach_lvd_backend(const char *file_path, image_fs_type_t fs_type,
   unsigned int attach_image_type_count = 1;
   attach_image_types[0] = get_lvd_image_type(fs_type);
   if (fs_type == IMAGE_FS_PFS) {
-    // Empirical probe order requested by user:
-    // 1) ppr-candidate brute-force ids (excluding 0 and 5)
-    // 2) single-image fallback
-    // 3) pfs-save fallback
+    // Empirical probe order:
+    // 1) configured ppr-candidate id first
+    // 2) remaining ppr-candidate brute-force ids
+    // 3) single-image fallback
+    // 4) pfs-save fallback
     static const uint16_t ppr_candidate_probe_ids[] = {
+        LVD_ATTACH_IMAGE_TYPE_PFS_PPR_CANDIDATE,
         2, 3, 4, 6, 7, 8, 9, 10, 11, 12};
     attach_image_type_count = 0;
     for (unsigned int i = 0;
          i < (unsigned int)(sizeof(ppr_candidate_probe_ids) /
                             sizeof(ppr_candidate_probe_ids[0]));
          i++) {
-      attach_image_types[attach_image_type_count++] = ppr_candidate_probe_ids[i];
+      uint16_t candidate = ppr_candidate_probe_ids[i];
+      if (candidate == LVD_ATTACH_IMAGE_TYPE_SINGLE ||
+          candidate == LVD_ATTACH_IMAGE_TYPE_PFS_SAVE_DATA) {
+        continue;
+      }
+
+      bool already_added = false;
+      for (unsigned int j = 0; j < attach_image_type_count; j++) {
+        if (attach_image_types[j] == candidate) {
+          already_added = true;
+          break;
+        }
+      }
+      if (!already_added)
+        attach_image_types[attach_image_type_count++] = candidate;
     }
     attach_image_types[attach_image_type_count++] = LVD_ATTACH_IMAGE_TYPE_SINGLE;
     attach_image_types[attach_image_type_count++] =
         LVD_ATTACH_IMAGE_TYPE_PFS_SAVE_DATA;
 
-    log_debug("  [IMG][%s] PFS image_type policy: probe ids "
-              "[2,3,4,6,7,8,9,10,11,12] -> single(%u) -> pfs_save(%u)",
+    log_debug("  [IMG][%s] PFS image_type policy: preferred ppr_candidate=%u",
+              attach_backend_name(ATTACH_BACKEND_LVD),
+              (unsigned)LVD_ATTACH_IMAGE_TYPE_PFS_PPR_CANDIDATE);
+    for (unsigned int i = 0; i < attach_image_type_count; i++) {
+      log_debug("  [IMG][%s] PFS image_type candidate[%u]=%u(%s)",
+                attach_backend_name(ATTACH_BACKEND_LVD), i,
+                (unsigned)attach_image_types[i],
+                lvd_image_type_name(attach_image_types[i]));
+    }
+    log_debug("  [IMG][%s] PFS image_type fallback tail: single(%u) -> "
+              "pfs_save(%u)",
               attach_backend_name(ATTACH_BACKEND_LVD),
               (unsigned)LVD_ATTACH_IMAGE_TYPE_SINGLE,
               (unsigned)LVD_ATTACH_IMAGE_TYPE_PFS_SAVE_DATA);
@@ -883,13 +908,14 @@ static bool perform_image_nmount(const char *file_path, image_fs_type_t fs_type,
   unsigned int mount_flags =
       get_nmount_flags(fs_type, mount_read_only, &mount_mode);
 
-  // For PFS, try fstype variants in order: ppr_pfs -> pfs,
+  // For PFS, try fstype variants in order: ppr_pfs -> transaction_pfs -> pfs,
   // then each mkeymode: GD -> SD -> AC.
   // Also try with sigverify enabled first, then disabled as fallback.
   // Keep retrying through all modes even after non-EPROTONOSUPPORT failures,
   // because behavior can differ by firmware/content and mode combination.
   if (fs_type == IMAGE_FS_PFS) {
-    static const char *const pfs_fstypes[] = {"ppr_pfs", "pfs"};
+    static const char *const pfs_fstypes[] = {
+      "ppr_pfs", "transaction_pfs", "pfs"};
     static const char *const pfs_mkeymodes[] = {
         DEVPFS_MKEYMODE_GD, DEVPFS_MKEYMODE_SD, DEVPFS_MKEYMODE_AC};
     static const char *const pfs_sigverifies_signed[] = {"1"};
@@ -918,7 +944,7 @@ static bool perform_image_nmount(const char *file_path, image_fs_type_t fs_type,
                 attach_backend_name(attach_backend));
     }
 
-    for (unsigned int fi = 0; fi < 2; fi++) {
+    for (unsigned int fi = 0; fi < 3; fi++) {
       const char *fstype_attempt = pfs_fstypes[fi];
       // iov_pfs[5] is the fstype value slot.
       iov_pfs[5].iov_base = (void *)fstype_attempt;
@@ -970,8 +996,12 @@ static bool perform_image_nmount(const char *file_path, image_fs_type_t fs_type,
       }
 
       if (fi == 0) {
-        log_debug("  [IMG][%s] All ppr_pfs attempts failed, trying pfs "
-                  "fallback", attach_backend_name(attach_backend));
+        log_debug("  [IMG][%s] All ppr_pfs attempts failed, trying "
+                  "transaction_pfs fallback",
+                  attach_backend_name(attach_backend));
+      } else if (fi == 1) {
+        log_debug("  [IMG][%s] All transaction_pfs attempts failed, trying "
+                  "pfs fallback", attach_backend_name(attach_backend));
       }
     }
     (void)detach_attached_unit(attach_backend, unit_id);
