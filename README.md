@@ -69,6 +69,8 @@ Supported keys (all optional):
 - `lvd_pfs_sector_size=<value>` (default: `32768`)
 - `md_exfat_sector_size=<value>` (default: `512`)
 - `md_ufs_sector_size=<value>` (default: `512`)
+- `pfs_backend=lvd|md` (default: `lvd`)
+- `md_pfs_sector_size=<value>` (default: `4096`)
 
 Per-image mode override behavior:
 - Match is done by image file name (without path).

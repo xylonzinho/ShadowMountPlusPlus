@@ -205,6 +205,47 @@ static uint16_t get_lvd_image_type(image_fs_type_t fs_type) {
   return LVD_ATTACH_IMAGE_TYPE_SINGLE;
 }
 
+static bool try_attach_lvd_pfs_single_first(int lvd_fd,
+                                             lvd_ioctl_attach_v0_t *req,
+                                             int *unit_id_out) {
+  if (!req || !unit_id_out)
+    return false;
+
+  // First probe requested by runtime reports:
+  // ver=0 sec=512 sec2=65536 raw=0x9 flags=0x1c img=0(single)
+  const uint16_t first_raw_flags = LVD_ATTACH_RAW_FLAGS_SINGLE_RO;
+  req->io_version = LVD_ATTACH_IO_VERSION_V0;
+  req->sector_size = 512u;
+  req->secondary_unit = LVD_SECONDARY_UNIT_SINGLE_IMAGE;
+  req->flags = normalize_lvd_raw_flags(first_raw_flags);
+  req->image_type = LVD_ATTACH_IMAGE_TYPE_SINGLE;
+  req->device_id = -1;
+
+  log_debug("  [IMG][%s] attach first try: ver=%u sec=%u sec2=%u raw=0x%x "
+            "flags=0x%x img=%u(%s)",
+            attach_backend_name(ATTACH_BACKEND_LVD), req->io_version,
+            req->sector_size, req->secondary_unit, first_raw_flags, req->flags,
+            req->image_type, lvd_image_type_name(req->image_type));
+
+  int ret = ioctl(lvd_fd, SCE_LVD_IOC_ATTACH_V0, req);
+  if (ret == 0 && req->device_id >= 0) {
+    *unit_id_out = req->device_id;
+    return true;
+  }
+
+  if (ret == 0) {
+    errno = EINVAL;
+    log_debug("  [IMG][%s] attach first try invalid unit: img=%u unit=%d",
+              attach_backend_name(ATTACH_BACKEND_LVD),
+              (unsigned)req->image_type, req->device_id);
+  } else {
+    log_debug("  [IMG][%s] attach first try failed: %s (ret: 0x%x, img=%u)",
+              attach_backend_name(ATTACH_BACKEND_LVD), strerror(errno), ret,
+              (unsigned)req->image_type);
+  }
+  return false;
+}
+
 static const char *lvd_image_type_name(uint16_t image_type) {
   switch (image_type) {
   case LVD_ATTACH_IMAGE_TYPE_SINGLE:
@@ -541,6 +582,29 @@ static bool attach_lvd_backend(const char *file_path, image_fs_type_t fs_type,
   int last_errno = 0;
   int ret = -1;
   int unit_id = -1;
+
+  if (fs_type == IMAGE_FS_PFS) {
+    if (try_attach_lvd_pfs_single_first(lvd_fd, &req, &unit_id)) {
+      close(lvd_fd);
+      log_debug("  [IMG][%s] attach first try selected unit=%d",
+                attach_backend_name(ATTACH_BACKEND_LVD), unit_id);
+
+      snprintf(devname_out, devname_size, "/dev/lvd%d", unit_id);
+      log_debug("  [IMG][%s] Attached as %s from image: %s",
+                attach_backend_name(ATTACH_BACKEND_LVD), devname_out,
+                file_path);
+      if (!wait_for_dev_node_state(devname_out, true)) {
+        log_debug("  [IMG][%s] device node did not appear: %s",
+                  attach_backend_name(ATTACH_BACKEND_LVD), devname_out);
+        (void)detach_attached_unit(ATTACH_BACKEND_LVD, unit_id);
+        return false;
+      }
+
+      *unit_id_out = unit_id;
+      return true;
+    }
+    last_errno = errno;
+  }
 
   bool exhaustive_probe =
       (fs_type == IMAGE_FS_PFS) && (attach_image_type_count > 1);
@@ -950,7 +1014,7 @@ static bool perform_image_nmount(const char *file_path, image_fs_type_t fs_type,
   // because behavior can differ by firmware/content and mode combination.
   if (fs_type == IMAGE_FS_PFS) {
     static const char *const pfs_fstypes[] = {
-      DEVPFS_FSTYPE_PPR, DEVPFS_FSTYPE_TRANSACTION, DEVPFS_FSTYPE_REGULAR};
+      DEVPFS_FSTYPE_REGULAR, DEVPFS_FSTYPE_PPR, DEVPFS_FSTYPE_TRANSACTION};
     static const char *const pfs_mkeymodes[] = {
         DEVPFS_MKEYMODE_GD, DEVPFS_MKEYMODE_SD, DEVPFS_MKEYMODE_AC};
     static const char *const pfs_sigverifies_signed[] = {"1"};
@@ -1185,6 +1249,12 @@ bool mount_image(const char *file_path, image_fs_type_t fs_type) {
               lvd_image_type_name(image_type), image_fs_name(fs_type),
               devname, mount_point);
     log_active_lvd_mounts("post-mount");
+  }
+
+  if (attach_backend == ATTACH_BACKEND_MD && fs_type == IMAGE_FS_PFS) {
+    uint32_t used_sector = get_md_sector_size_for_path(file_path, fs_type);
+    log_debug("  [IMG][MD] PFS mounted via MD: device=%s mounted_at=%s sector_size=%u",
+              devname, mount_point, used_sector);
   }
 
   if (!cache_image_mount(file_path, mount_point, unit_id, attach_backend)) {
