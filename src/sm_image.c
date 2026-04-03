@@ -450,20 +450,32 @@ static bool attach_lvd_backend(const char *file_path, image_fs_type_t fs_type,
   req.sector_size = sector_size;
   req.secondary_unit = secondary_unit;
   req.flags = normalized_flags;
-  uint16_t attach_image_types[2];
+  uint16_t attach_image_types[16];
   unsigned int attach_image_type_count = 1;
   attach_image_types[0] = get_lvd_image_type(fs_type);
   if (fs_type == IMAGE_FS_PFS) {
-    attach_image_types[0] = LVD_ATTACH_IMAGE_TYPE_PFS_PPR_CANDIDATE;
-    attach_image_types[1] = LVD_ATTACH_IMAGE_TYPE_PFS_SAVE_DATA;
-    attach_image_type_count = 2;
-    log_debug("  [IMG][%s] PFS image_type policy: try img=%u(%s) then "
-              "img=%u(%s)",
+    // Empirical probe order requested by user:
+    // 1) ppr-candidate brute-force ids (excluding 0 and 5)
+    // 2) single-image fallback
+    // 3) pfs-save fallback
+    static const uint16_t ppr_candidate_probe_ids[] = {
+        2, 3, 4, 6, 7, 8, 9, 10, 11, 12};
+    attach_image_type_count = 0;
+    for (unsigned int i = 0;
+         i < (unsigned int)(sizeof(ppr_candidate_probe_ids) /
+                            sizeof(ppr_candidate_probe_ids[0]));
+         i++) {
+      attach_image_types[attach_image_type_count++] = ppr_candidate_probe_ids[i];
+    }
+    attach_image_types[attach_image_type_count++] = LVD_ATTACH_IMAGE_TYPE_SINGLE;
+    attach_image_types[attach_image_type_count++] =
+        LVD_ATTACH_IMAGE_TYPE_PFS_SAVE_DATA;
+
+    log_debug("  [IMG][%s] PFS image_type policy: probe ids "
+              "[2,3,4,6,7,8,9,10,11,12] -> single(%u) -> pfs_save(%u)",
               attach_backend_name(ATTACH_BACKEND_LVD),
-              (unsigned)attach_image_types[0],
-              lvd_image_type_name(attach_image_types[0]),
-              (unsigned)attach_image_types[1],
-              lvd_image_type_name(attach_image_types[1]));
+              (unsigned)LVD_ATTACH_IMAGE_TYPE_SINGLE,
+              (unsigned)LVD_ATTACH_IMAGE_TYPE_PFS_SAVE_DATA);
   }
 
   int last_errno = 0;
