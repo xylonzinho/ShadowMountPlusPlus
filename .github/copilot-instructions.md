@@ -2,6 +2,8 @@
 
 ## Feature Delivery Workflow
 
+**Default rule:** after every feature/fix, complete the full pipeline end-to-end without waiting for a separate deploy request: commit -> push -> tag -> CI verify -> deploy to PS5.
+
 After every fix or improvement is stable in this repo:
 
 1. **Commit** changes to the current branch with:
@@ -18,7 +20,7 @@ After every fix or improvement is stable in this repo:
    - If the build failed: diagnose, fix, commit, push, re-tag, re-verify.
 
 > No local compilation available — all releases MUST go through the tag-triggered CI pipeline.  
-> Do NOT ask for confirmation before committing, tagging, or pushing.
+> Do NOT ask for confirmation before committing, tagging, pushing, or deploying.
 
 ## PS5 Deployment
 
@@ -40,3 +42,14 @@ After every fix or improvement is stable in this repo:
 - Double-check current configs on FTP (`/data/shadowmount/`) before uploading.
 - Upload the build that matches the specific ask/release.
 - Confirm FTP upload succeeded before asking user to restart.
+
+## Mounted Image Debugging Workflow
+
+When the user reports missing files/subdirectories or very slow access on mounted images:
+
+1. After user loads the new build and if PS5 did not crash, inspect debug logs under `/data/shadowmount/` first.
+2. Identify detected image paths and resolved mount locations from logs.
+3. Inspect original image files under `/data/homebrew`.
+4. Inspect mounted filesystems under `/mnt/shadowmnt/` (for example `/mnt/shadowmnt/PPSA07923-PS5-32bits-BS64k-compressed-unsigned_a933c899`).
+5. Compare image-source listings vs mounted-path listings to confirm which files/subdirectories are missing.
+6. Capture listing mismatches in logs before changing mount logic.
