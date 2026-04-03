@@ -209,6 +209,32 @@ static bool validate_install_source(const char *src_path, const char *title_id) 
   return true;
 }
 
+static void enumerate_root_files(const char *path) {
+  DIR *d = opendir(path);
+  if (!d) {
+    log_debug("  [STEP][VAL] cannot enumerate root: %s", strerror(errno));
+    return;
+  }
+
+  log_debug("  [STEP][VAL] root files:");
+  struct dirent *e;
+  int count = 0;
+  while ((e = readdir(d)) != NULL) {
+    if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0)
+      continue;
+    count++;
+    if (count <= 50) {
+      log_debug("    [FILE] %s", e->d_name);
+    }
+  }
+  if (count > 50) {
+    log_debug("    [FILE] ... and %d more files", count - 50);
+  } else if (count == 0) {
+    log_debug("    [FILE] (empty directory)");
+  }
+  closedir(d);
+}
+
 static bool resolve_install_source_root(const char *src_path,
                                         const char *title_id,
                                         char *resolved_src,
@@ -287,6 +313,7 @@ static bool resolve_install_source_root(const char *src_path,
   }
 
   log_debug("  [STEP][VAL] root-probe exhausted candidates for title=%s", title_id);
+  enumerate_root_files(src_path);
 
   return false;
 }
