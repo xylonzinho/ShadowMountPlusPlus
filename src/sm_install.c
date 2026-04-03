@@ -176,6 +176,9 @@ static void rollback_install_attempt(const char *title_id,
   log_debug("  [ROLLBACK] completed title=%s", title_id);
 }
 
+static bool path_exists_in_dir_case_insensitive(const char *dir_path,
+                                                const char *file_name);
+
 static bool validate_install_source(const char *src_path, const char *title_id) {
   char src_eboot[MAX_PATH];
   char src_param_json[MAX_PATH];
@@ -189,7 +192,10 @@ static bool validate_install_source(const char *src_path, const char *title_id) 
 
   log_debug("  [STEP][VAL] checking eboot: %s", src_eboot);
 
-  if (!path_exists(src_eboot)) {
+  bool has_eboot =
+      path_exists(src_eboot) ||
+      path_exists_in_dir_case_insensitive(src_path, "eboot.bin");
+  if (!has_eboot) {
     log_debug("  [REG] missing source eboot.bin: %s", src_eboot);
     return false;
   }
@@ -235,6 +241,34 @@ static void enumerate_root_files(const char *path) {
   closedir(d);
 }
 
+// Some dumps/images can use case variants like EBOOT.BIN.
+static bool path_exists_in_dir_case_insensitive(const char *dir_path,
+                                                const char *file_name) {
+  if (!dir_path || !file_name)
+    return false;
+
+  DIR *d = opendir(dir_path);
+  if (!d)
+    return false;
+
+  bool found = false;
+  struct dirent *e;
+  while ((e = readdir(d)) != NULL) {
+    if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0)
+      continue;
+    if (strcasecmp(e->d_name, file_name) != 0)
+      continue;
+
+    char candidate[MAX_PATH];
+    snprintf(candidate, sizeof(candidate), "%s/%s", dir_path, e->d_name);
+    found = path_exists(candidate);
+    break;
+  }
+
+  closedir(d);
+  return found;
+}
+
 static bool resolve_install_source_root(const char *src_path,
                                         const char *title_id,
                                         char *resolved_src,
@@ -264,7 +298,9 @@ static bool resolve_install_source_root(const char *src_path,
     snprintf(candidate_param_sfo, sizeof(candidate_param_sfo),
              "%s/sce_sys/param.sfo", candidate);
 
-    has_eboot = path_exists(candidate_eboot);
+    has_eboot =
+      path_exists(candidate_eboot) ||
+      path_exists_in_dir_case_insensitive(candidate, "eboot.bin");
     has_param_json = path_exists(candidate_param_json);
     has_param_sfo = path_exists(candidate_param_sfo);
 
@@ -296,7 +332,9 @@ static bool resolve_install_source_root(const char *src_path,
     snprintf(candidate_param_sfo, sizeof(candidate_param_sfo),
              "%s/sce_sys/param.sfo", candidate);
 
-    has_eboot = path_exists(candidate_eboot);
+    has_eboot =
+      path_exists(candidate_eboot) ||
+      path_exists_in_dir_case_insensitive(candidate, "eboot.bin");
     has_param_json = path_exists(candidate_param_json);
     has_param_sfo = path_exists(candidate_param_sfo);
 

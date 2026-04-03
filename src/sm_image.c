@@ -207,6 +207,9 @@ static uint16_t get_lvd_image_type(image_fs_type_t fs_type) {
 
 static const char *lvd_image_type_name(uint16_t image_type);
 
+// Tracks the last successful LVD attach image_type for mount logging.
+static int g_last_lvd_attach_image_type = -1;
+
 static bool try_attach_lvd_pfs_single_first(int lvd_fd,
                                              lvd_ioctl_attach_v0_t *req,
                                              int *unit_id_out) {
@@ -474,6 +477,7 @@ static bool attach_lvd_backend(const char *file_path, image_fs_type_t fs_type,
                                bool mount_read_only, off_t file_size,
                                int *unit_id_out, char *devname_out,
                                size_t devname_size) {
+  g_last_lvd_attach_image_type = -1;
   int lvd_fd = open(LVD_CTRL_PATH, O_RDWR);
   if (lvd_fd < 0) {
     log_debug("  [IMG][%s] open %s failed: %s",
@@ -587,6 +591,7 @@ static bool attach_lvd_backend(const char *file_path, image_fs_type_t fs_type,
 
   if (fs_type == IMAGE_FS_PFS) {
     if (try_attach_lvd_pfs_single_first(lvd_fd, &req, &unit_id)) {
+      g_last_lvd_attach_image_type = (int)req.image_type;
       close(lvd_fd);
       log_debug("  [IMG][%s] attach first try selected unit=%d",
                 attach_backend_name(ATTACH_BACKEND_LVD), unit_id);
@@ -717,10 +722,13 @@ static bool attach_lvd_backend(const char *file_path, image_fs_type_t fs_type,
 
   if (unit_id < 0) {
     errno = last_errno;
+    g_last_lvd_attach_image_type = -1;
     log_debug("  [IMG][%s] attach failed: %s (ret: 0x%x)",
               attach_backend_name(ATTACH_BACKEND_LVD), strerror(errno), ret);
     return false;
   }
+
+  g_last_lvd_attach_image_type = (int)req.image_type;
 
   log_debug("  [IMG][%s] attach returned unit=%d",
             attach_backend_name(ATTACH_BACKEND_LVD), unit_id);
@@ -1246,7 +1254,9 @@ bool mount_image(const char *file_path, image_fs_type_t fs_type) {
             devname, mount_point);
   log_fs_stats("IMG", mount_point, image_fs_name(fs_type));
   if (attach_backend == ATTACH_BACKEND_LVD) {
-    uint16_t image_type = get_lvd_image_type(fs_type);
+    uint16_t image_type = (g_last_lvd_attach_image_type >= 0)
+                              ? (uint16_t)g_last_lvd_attach_image_type
+                              : get_lvd_image_type(fs_type);
     log_debug("  [IMG][LVD] mount_type=%s image_fs=%s source=%s mounted_at=%s",
               lvd_image_type_name(image_type), image_fs_name(fs_type),
               devname, mount_point);
