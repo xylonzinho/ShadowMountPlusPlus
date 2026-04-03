@@ -205,6 +205,8 @@ static uint16_t get_lvd_image_type(image_fs_type_t fs_type) {
   return LVD_ATTACH_IMAGE_TYPE_SINGLE;
 }
 
+static const char *lvd_image_type_name(uint16_t image_type);
+
 static bool try_attach_lvd_pfs_single_first(int lvd_fd,
                                              lvd_ioctl_attach_v0_t *req,
                                              int *unit_id_out) {
