@@ -481,29 +481,110 @@ static bool attach_lvd_backend(const char *file_path, image_fs_type_t fs_type,
   int last_errno = 0;
   int ret = -1;
   int unit_id = -1;
-  for (unsigned int i = 0; i < attach_image_type_count; i++) {
-    req.image_type = attach_image_types[i];
+
+  bool exhaustive_probe =
+      (fs_type == IMAGE_FS_PFS) && (attach_image_type_count > 1);
+  int selected_index = -1;
+  if (exhaustive_probe) {
+    bool probe_success[16];
+    memset(probe_success, 0, sizeof(probe_success));
+
+    log_debug("  [IMG][%s] PFS exhaustive attach probe start (count=%u)",
+              attach_backend_name(ATTACH_BACKEND_LVD), attach_image_type_count);
+
+    // Probe every candidate ID once so we learn which IDs are attach-valid on
+    // this firmware/image, then perform one final attach using the first
+    // successful candidate in configured priority order.
+    for (unsigned int i = 0; i < attach_image_type_count; i++) {
+      req.image_type = attach_image_types[i];
+      req.device_id = -1;
+      log_debug("  [IMG][%s] attach probe: ver=%u sec=%u sec2=%u raw=0x%x "
+                "flags=0x%x img=%u(%s)",
+                attach_backend_name(ATTACH_BACKEND_LVD), req.io_version,
+                req.sector_size, req.secondary_unit, raw_flags, req.flags,
+                req.image_type, lvd_image_type_name(req.image_type));
+      ret = ioctl(lvd_fd, SCE_LVD_IOC_ATTACH_V0, &req);
+      if (ret == 0 && req.device_id >= 0) {
+        probe_success[i] = true;
+        log_debug("  [IMG][%s] attach probe success: img=%u unit=%d",
+                  attach_backend_name(ATTACH_BACKEND_LVD),
+                  (unsigned)req.image_type, req.device_id);
+        if (!detach_attached_unit(ATTACH_BACKEND_LVD, req.device_id)) {
+          log_debug("  [IMG][%s] attach probe detach failed: img=%u unit=%d",
+                    attach_backend_name(ATTACH_BACKEND_LVD),
+                    (unsigned)req.image_type, req.device_id);
+        }
+      } else {
+        last_errno = (ret != 0) ? errno : EINVAL;
+        if (ret == 0) {
+          log_debug("  [IMG][%s] attach probe invalid unit: img=%u unit=%d",
+                    attach_backend_name(ATTACH_BACKEND_LVD),
+                    (unsigned)req.image_type, req.device_id);
+        } else {
+          log_debug("  [IMG][%s] attach probe failed: %s (ret: 0x%x, img=%u)",
+                    attach_backend_name(ATTACH_BACKEND_LVD), strerror(errno),
+                    ret, (unsigned)req.image_type);
+        }
+      }
+    }
+
+    for (unsigned int i = 0; i < attach_image_type_count; i++) {
+      if (probe_success[i]) {
+        selected_index = (int)i;
+        break;
+      }
+    }
+
+    if (selected_index < 0) {
+      close(lvd_fd);
+      errno = last_errno;
+      log_debug("  [IMG][%s] attach failed after exhaustive probe: %s",
+                attach_backend_name(ATTACH_BACKEND_LVD), strerror(errno));
+      return false;
+    }
+
+    req.image_type = attach_image_types[selected_index];
     req.device_id = -1;
-    log_debug("  [IMG][%s] attach try: ver=%u sec=%u sec2=%u raw=0x%x "
-              "flags=0x%x img=%u(%s)",
-              attach_backend_name(ATTACH_BACKEND_LVD), req.io_version,
-              req.sector_size, req.secondary_unit, raw_flags, req.flags,
-              req.image_type, lvd_image_type_name(req.image_type));
+    log_debug("  [IMG][%s] attach select: img=%u(%s)",
+              attach_backend_name(ATTACH_BACKEND_LVD),
+              (unsigned)req.image_type, lvd_image_type_name(req.image_type));
     ret = ioctl(lvd_fd, SCE_LVD_IOC_ATTACH_V0, &req);
     if (ret == 0 && req.device_id >= 0) {
       unit_id = req.device_id;
-      break;
-    }
-
-    last_errno = (ret != 0) ? errno : EINVAL;
-    if (ret == 0) {
-      log_debug("  [IMG][%s] attach returned invalid unit: %d (img=%u)",
-                attach_backend_name(ATTACH_BACKEND_LVD), req.device_id,
-                (unsigned)req.image_type);
     } else {
-      log_debug("  [IMG][%s] attach failed: %s (ret: 0x%x, img=%u)",
+      last_errno = (ret != 0) ? errno : EINVAL;
+      close(lvd_fd);
+      errno = last_errno;
+      log_debug("  [IMG][%s] attach select failed: %s (ret: 0x%x, img=%u)",
                 attach_backend_name(ATTACH_BACKEND_LVD), strerror(errno), ret,
                 (unsigned)req.image_type);
+      return false;
+    }
+  } else {
+    for (unsigned int i = 0; i < attach_image_type_count; i++) {
+      req.image_type = attach_image_types[i];
+      req.device_id = -1;
+      log_debug("  [IMG][%s] attach try: ver=%u sec=%u sec2=%u raw=0x%x "
+                "flags=0x%x img=%u(%s)",
+                attach_backend_name(ATTACH_BACKEND_LVD), req.io_version,
+                req.sector_size, req.secondary_unit, raw_flags, req.flags,
+                req.image_type, lvd_image_type_name(req.image_type));
+      ret = ioctl(lvd_fd, SCE_LVD_IOC_ATTACH_V0, &req);
+      if (ret == 0 && req.device_id >= 0) {
+        unit_id = req.device_id;
+        break;
+      }
+
+      last_errno = (ret != 0) ? errno : EINVAL;
+      if (ret == 0) {
+        log_debug("  [IMG][%s] attach returned invalid unit: %d (img=%u)",
+                  attach_backend_name(ATTACH_BACKEND_LVD), req.device_id,
+                  (unsigned)req.image_type);
+      } else {
+        log_debug("  [IMG][%s] attach failed: %s (ret: 0x%x, img=%u)",
+                  attach_backend_name(ATTACH_BACKEND_LVD), strerror(errno), ret,
+                  (unsigned)req.image_type);
+      }
     }
   }
   close(lvd_fd);
