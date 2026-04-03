@@ -197,10 +197,8 @@ static uint16_t normalize_lvd_raw_flags(uint16_t raw_flags) {
 static uint16_t get_lvd_image_type(image_fs_type_t fs_type) {
   if (fs_type == IMAGE_FS_UFS)
     return LVD_ATTACH_IMAGE_TYPE_UFS_DOWNLOAD_DATA;
-  // EXPERIMENT: Try mounting PFS as img=0 (SINGLE) instead of img=5 (PFS_SAVE_DATA)
-  // This tests if the image type restriction is preventing eboot detection on PFS mounts
   if (fs_type == IMAGE_FS_PFS)
-    return LVD_ATTACH_IMAGE_TYPE_SINGLE;  // Was: LVD_ATTACH_IMAGE_TYPE_PFS_SAVE_DATA
+    return LVD_ATTACH_IMAGE_TYPE_PFS_SAVE_DATA;
   return LVD_ATTACH_IMAGE_TYPE_SINGLE;
 }
 

@@ -45,8 +45,10 @@
 #define LVD_ATTACH_IMAGE_TYPE_SINGLE 0
 #define LVD_ATTACH_IMAGE_TYPE_UFS_DOWNLOAD_DATA 7
 #define LVD_ATTACH_IMAGE_TYPE_PFS_SAVE_DATA 5
+// EXPERIMENT: Increase layer array size (from 3 to 6) to test if larger buffer affects eboot detection
+// Keep layer_count=1 since we only have a single PFS image file
 #define LVD_ATTACH_LAYER_COUNT 1
-#define LVD_ATTACH_LAYER_ARRAY_SIZE 3
+#define LVD_ATTACH_LAYER_ARRAY_SIZE 6
 #define LVD_ENTRY_TYPE_FILE 1
 #define LVD_ENTRY_TYPE_SPECIAL 2
 #define LVD_ENTRY_FLAG_NO_BITMAP 0x1
