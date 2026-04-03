@@ -44,7 +44,7 @@
 // The normalized masks are then checked against validator constraints (0x82/0x92).
 #define LVD_ATTACH_IMAGE_TYPE_SINGLE 0
 #define LVD_ATTACH_IMAGE_TYPE_UFS_DOWNLOAD_DATA 7
-#define LVD_ATTACH_IMAGE_TYPE_PFS_PPR_CANDIDATE 2
+#define LVD_ATTACH_IMAGE_TYPE_PFS_PPR_CANDIDATE 6
 #define LVD_ATTACH_IMAGE_TYPE_PFS_SAVE_DATA 5
 #define LVD_ATTACH_LAYER_COUNT 1
 #define LVD_ATTACH_LAYER_ARRAY_SIZE 3
@@ -64,6 +64,9 @@
 // - sigverify/playgo/disc: "0" or "1"
 // - optional keys in specific flows: ekpfs/eekpfs, eekc, pubkey_ver, key_ver,
 //   finalized, ppkg_opt, sblock_offset, maxpkgszingib
+#define DEVPFS_FSTYPE_PPR "ppr_pfs"
+#define DEVPFS_FSTYPE_TRANSACTION "transaction_pfs"
+#define DEVPFS_FSTYPE_REGULAR "pfs"
 #define DEVPFS_BUDGET_GAME "game"
 #define DEVPFS_BUDGET_SYSTEM "system"
 #define DEVPFS_MKEYMODE_SD "SD"

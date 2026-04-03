@@ -874,7 +874,7 @@ static bool perform_image_nmount(const char *file_path, image_fs_type_t fs_type,
     struct iovec iov_pfs[] = {
       IOVEC_ENTRY("from"),       IOVEC_ENTRY(devname),
       IOVEC_ENTRY("fspath"),     IOVEC_ENTRY(mount_point),
-      IOVEC_ENTRY("fstype"),     IOVEC_ENTRY("ppr_pfs"),
+      IOVEC_ENTRY("fstype"),     IOVEC_ENTRY(DEVPFS_FSTYPE_PPR),
       IOVEC_ENTRY("sigverify"),  IOVEC_ENTRY(sigverify),
       IOVEC_ENTRY("mkeymode"),   IOVEC_ENTRY(PFS_MOUNT_MKEYMODE),
       IOVEC_ENTRY("budgetid"),   IOVEC_ENTRY(PFS_MOUNT_BUDGET_ID),
@@ -908,14 +908,11 @@ static bool perform_image_nmount(const char *file_path, image_fs_type_t fs_type,
   unsigned int mount_flags =
       get_nmount_flags(fs_type, mount_read_only, &mount_mode);
 
-  // For PFS, try fstype variants in order: ppr_pfs -> transaction_pfs -> pfs,
-  // then each mkeymode: GD -> SD -> AC.
+  // For PFS, always mount using ppr_pfs, then try each mkeymode: GD -> SD -> AC.
   // Also try with sigverify enabled first, then disabled as fallback.
   // Keep retrying through all modes even after non-EPROTONOSUPPORT failures,
   // because behavior can differ by firmware/content and mode combination.
   if (fs_type == IMAGE_FS_PFS) {
-    static const char *const pfs_fstypes[] = {
-      "ppr_pfs", "transaction_pfs", "pfs"};
     static const char *const pfs_mkeymodes[] = {
         DEVPFS_MKEYMODE_GD, DEVPFS_MKEYMODE_SD, DEVPFS_MKEYMODE_AC};
     static const char *const pfs_sigverifies_signed[] = {"1"};
@@ -923,6 +920,7 @@ static bool perform_image_nmount(const char *file_path, image_fs_type_t fs_type,
     static const char *const pfs_sigverifies_unknown[] = {"1", "0"};
     const char *const *pfs_sigverifies = pfs_sigverifies_unknown;
     unsigned int pfs_sigverify_count = 2;
+    const char *fstype_attempt = DEVPFS_FSTYPE_PPR;
     bool sigverify_hint_known = false;
     bool prefer_sigverify_on = true;
     int pfs_mount_errno = 0;
@@ -944,64 +942,52 @@ static bool perform_image_nmount(const char *file_path, image_fs_type_t fs_type,
                 attach_backend_name(attach_backend));
     }
 
-    for (unsigned int fi = 0; fi < 3; fi++) {
-      const char *fstype_attempt = pfs_fstypes[fi];
-      // iov_pfs[5] is the fstype value slot.
-      iov_pfs[5].iov_base = (void *)fstype_attempt;
-      iov_pfs[5].iov_len = strlen(fstype_attempt) + 1;
+    // iov_pfs[5] is the fstype value slot.
+    iov_pfs[5].iov_base = (void *)fstype_attempt;
+    iov_pfs[5].iov_len = strlen(fstype_attempt) + 1;
 
-      for (unsigned int si = 0; si < pfs_sigverify_count; si++) {
-        const char *sigverify_attempt = pfs_sigverifies[si];
-        for (unsigned int mi = 0; mi < 3; mi++) {
-          // iov_pfs[7] is the sigverify value slot
-          // iov_pfs[9] is the mkeymode value slot
-          iov_pfs[7].iov_base = (void *)sigverify_attempt;
-          iov_pfs[7].iov_len  = strlen(sigverify_attempt) + 1;
-          iov_pfs[9].iov_base = (void *)pfs_mkeymodes[mi];
-          iov_pfs[9].iov_len  = strlen(pfs_mkeymodes[mi]) + 1;
-          memset(mount_errmsg, 0, sizeof(mount_errmsg));
-          log_debug("  [IMG][%s] PFS fstype=%s ro=%d budgetid=%s mkeymode=%s "
-                    "attempt_mkeymode=%s sigverify=%s playgo=%s disc=%s "
-                    "ekpfs=zero",
+    for (unsigned int si = 0; si < pfs_sigverify_count; si++) {
+      const char *sigverify_attempt = pfs_sigverifies[si];
+      for (unsigned int mi = 0; mi < 3; mi++) {
+        // iov_pfs[7] is the sigverify value slot
+        // iov_pfs[9] is the mkeymode value slot
+        iov_pfs[7].iov_base = (void *)sigverify_attempt;
+        iov_pfs[7].iov_len  = strlen(sigverify_attempt) + 1;
+        iov_pfs[9].iov_base = (void *)pfs_mkeymodes[mi];
+        iov_pfs[9].iov_len  = strlen(pfs_mkeymodes[mi]) + 1;
+        memset(mount_errmsg, 0, sizeof(mount_errmsg));
+        log_debug("  [IMG][%s] PFS fstype=%s ro=%d budgetid=%s mkeymode=%s "
+                  "attempt_mkeymode=%s sigverify=%s playgo=%s disc=%s "
+                  "ekpfs=zero",
+                  attach_backend_name(attach_backend), fstype_attempt,
+                  mount_read_only ? 1 : 0, PFS_MOUNT_BUDGET_ID,
+                  PFS_MOUNT_MKEYMODE, pfs_mkeymodes[mi], sigverify_attempt,
+                  playgo, disc);
+        if (nmount(iov, iovlen, (int)mount_flags) == 0) {
+          log_debug("  [IMG][%s] PFS mount successful with fstype=%s "
+                    "sigverify=%s mkeymode=%s",
                     attach_backend_name(attach_backend), fstype_attempt,
-                    mount_read_only ? 1 : 0, PFS_MOUNT_BUDGET_ID,
-                    PFS_MOUNT_MKEYMODE, pfs_mkeymodes[mi], sigverify_attempt,
-                    playgo, disc);
-          if (nmount(iov, iovlen, (int)mount_flags) == 0) {
-            log_debug("  [IMG][%s] PFS mount successful with fstype=%s "
-                      "sigverify=%s mkeymode=%s",
-                      attach_backend_name(attach_backend), fstype_attempt,
-                      sigverify_attempt, pfs_mkeymodes[mi]);
-            return true;
-          }
-          pfs_mount_errno = errno;
-          if (mount_errmsg[0] != '\0')
-            log_debug("  [IMG][%s] nmount %s fstype=%s sigverify=%s "
-                      "mkeymode=%s errmsg: %s",
-                      attach_backend_name(attach_backend), mount_mode,
-                      fstype_attempt, sigverify_attempt, pfs_mkeymodes[mi],
-                      mount_errmsg);
+                    sigverify_attempt, pfs_mkeymodes[mi]);
+          return true;
+        }
+        pfs_mount_errno = errno;
+        if (mount_errmsg[0] != '\0')
           log_debug("  [IMG][%s] nmount %s fstype=%s sigverify=%s "
-                    "mkeymode=%s failed: %s",
+                    "mkeymode=%s errmsg: %s",
                     attach_backend_name(attach_backend), mount_mode,
                     fstype_attempt, sigverify_attempt, pfs_mkeymodes[mi],
-                    strerror(pfs_mount_errno));
-        }
-        if (si == 0 && pfs_sigverify_count > 1) {
-          log_debug("  [IMG][%s] All fstype=%s sigverify=%s attempts failed, "
-                    "trying next sigverify mode",
-                    attach_backend_name(attach_backend), fstype_attempt,
-                    sigverify_attempt);
-        }
+                    mount_errmsg);
+        log_debug("  [IMG][%s] nmount %s fstype=%s sigverify=%s "
+                  "mkeymode=%s failed: %s",
+                  attach_backend_name(attach_backend), mount_mode,
+                  fstype_attempt, sigverify_attempt, pfs_mkeymodes[mi],
+                  strerror(pfs_mount_errno));
       }
-
-      if (fi == 0) {
-        log_debug("  [IMG][%s] All ppr_pfs attempts failed, trying "
-                  "transaction_pfs fallback",
-                  attach_backend_name(attach_backend));
-      } else if (fi == 1) {
-        log_debug("  [IMG][%s] All transaction_pfs attempts failed, trying "
-                  "pfs fallback", attach_backend_name(attach_backend));
+      if (si == 0 && pfs_sigverify_count > 1) {
+        log_debug("  [IMG][%s] All fstype=%s sigverify=%s attempts failed, "
+                  "trying next sigverify mode",
+                  attach_backend_name(attach_backend), fstype_attempt,
+                  sigverify_attempt);
       }
     }
     (void)detach_attached_unit(attach_backend, unit_id);
