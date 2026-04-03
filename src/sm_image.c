@@ -79,6 +79,9 @@ static uint32_t get_md_sector_size(image_fs_type_t fs_type) {
   default:
     fallback = cfg->md_sector_exfat;
     break;
+  case IMAGE_FS_PFS:
+    fallback = cfg->md_sector_pfs;
+    break;
   }
   return fallback;
 }
@@ -370,6 +373,22 @@ static bool attach_md_backend(const char *file_path, image_fs_type_t fs_type,
   req.md_file = (char *)file_path;
   req.md_mediasize = file_size;
   req.md_sectorsize = get_md_sector_size_for_path(file_path, fs_type);
+  // For PFS images prefer the on-disk PFS block size when available so the
+  // backing device sector size matches the filesystem block size. This mirrors
+  // the LVD-side behavior which reads the PFS header to autotune sector size.
+  if (fs_type == IMAGE_FS_PFS) {
+    uint32_t hdr_block_size = 0;
+    read_pfs_header_hints(file_path, NULL, NULL, &hdr_block_size);
+    bool valid_block_size = hdr_block_size >= PFS_BLOCK_SIZE_MIN &&
+                            hdr_block_size <= PFS_BLOCK_SIZE_MAX &&
+                            (hdr_block_size & (hdr_block_size - 1u)) == 0u;
+    if (valid_block_size) {
+      log_debug("  [IMG][%s] PFS header blocksz=%u overrides md_sector=%u",
+                attach_backend_name(ATTACH_BACKEND_MD), hdr_block_size,
+                req.md_sectorsize);
+      req.md_sectorsize = hdr_block_size;
+    }
+  }
   req.md_options = get_md_attach_options(mount_read_only);
 
   int last_errno = 0;
@@ -825,7 +844,7 @@ static attach_backend_t select_image_backend(const runtime_config_t *cfg,
     return cfg->exfat_backend;
   if (fs_type == IMAGE_FS_UFS)
     return cfg->ufs_backend;
-  return ATTACH_BACKEND_LVD;
+  return cfg->pfs_backend;
 }
 
 static bool attach_image_device(const char *file_path, image_fs_type_t fs_type,

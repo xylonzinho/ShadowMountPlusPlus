@@ -117,11 +117,13 @@ typedef struct runtime_config {
   uint32_t kstuff_pause_delay_direct_seconds;
   attach_backend_t exfat_backend;
   attach_backend_t ufs_backend;
+  attach_backend_t pfs_backend;
   uint32_t lvd_sector_exfat;
   uint32_t lvd_sector_ufs;
   uint32_t lvd_sector_pfs;
   uint32_t md_sector_exfat;
   uint32_t md_sector_ufs;
+  uint32_t md_sector_pfs;
 } runtime_config_t;
 
 typedef enum {

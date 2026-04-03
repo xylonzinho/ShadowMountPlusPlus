@@ -241,11 +241,13 @@ static void init_runtime_config_defaults(runtime_config_state_t *state) {
       DEFAULT_KSTUFF_PAUSE_DELAY_DIRECT_SECONDS;
   state->cfg.exfat_backend = default_exfat_backend();
   state->cfg.ufs_backend = default_ufs_backend();
+  state->cfg.pfs_backend = ATTACH_BACKEND_LVD;
   state->cfg.lvd_sector_exfat = LVD_SECTOR_SIZE_EXFAT;
   state->cfg.lvd_sector_ufs = LVD_SECTOR_SIZE_UFS;
   state->cfg.lvd_sector_pfs = LVD_SECTOR_SIZE_PFS;
   state->cfg.md_sector_exfat = MD_SECTOR_SIZE_EXFAT;
   state->cfg.md_sector_ufs = MD_SECTOR_SIZE_UFS;
+  state->cfg.md_sector_pfs = MD_SECTOR_SIZE_PFS;
   memset(state->image_mode_rules, 0, sizeof(state->image_mode_rules));
   clear_kstuff_title_rules(state);
   init_runtime_scan_paths_defaults(state);
@@ -1273,6 +1275,16 @@ static config_load_status_t load_runtime_config_state(runtime_config_state_t *st
       continue;
     }
 
+    if (strcasecmp(key, "pfs_backend") == 0) {
+      if (!parse_backend_ini(value, &backend)) {
+        log_debug("  [CFG] invalid backend at line %d: %s=%s", line_no, key,
+                  value);
+        continue;
+      }
+      state->cfg.pfs_backend = backend;
+      continue;
+    }
+
     if (strcasecmp(key, "scanpath") == 0) {
       if (!has_custom_scanpaths) {
         clear_runtime_scan_paths(state);
@@ -1290,7 +1302,8 @@ static config_load_status_t load_runtime_config_state(runtime_config_state_t *st
         (strcasecmp(key, "lvd_ufs_sector_size") == 0) ||
         (strcasecmp(key, "lvd_pfs_sector_size") == 0) ||
         (strcasecmp(key, "md_exfat_sector_size") == 0) ||
-        (strcasecmp(key, "md_ufs_sector_size") == 0);
+        (strcasecmp(key, "md_ufs_sector_size") == 0) ||
+        (strcasecmp(key, "md_pfs_sector_size") == 0);
 
     if (!is_sector_key) {
       log_debug("  [CFG] unknown key at line %d: %s", line_no, key);
@@ -1313,6 +1326,8 @@ static config_load_status_t load_runtime_config_state(runtime_config_state_t *st
       state->cfg.md_sector_exfat = u32;
     } else if (strcasecmp(key, "md_ufs_sector_size") == 0) {
       state->cfg.md_sector_ufs = u32;
+    } else if (strcasecmp(key, "md_pfs_sector_size") == 0) {
+      state->cfg.md_sector_pfs = u32;
     }
   }
 
@@ -1348,7 +1363,7 @@ static config_load_status_t load_runtime_config_state(runtime_config_state_t *st
             "kstuff_game_auto_toggle=%d kstuff_crash_detection=%d "
             "kstuff_pause_delay_image_s=%u kstuff_pause_delay_direct_s=%u "
             "exfat_backend=%s ufs_backend=%s "
-            "lvd_sec(exfat=%u ufs=%u pfs=%u) md_sec(exfat=%u ufs=%u) "
+            "lvd_sec(exfat=%u ufs=%u pfs=%u) md_sec(exfat=%u ufs=%u pfs=%u) pfs_backend=%s "
             "scan_interval_s=%u stability_wait_s=%u scan_paths=%d image_rules=%d "
             "kstuff_no_pause=%d kstuff_delay_rules=%d",
             state->cfg.debug_enabled ? 1 : 0, state->cfg.quiet_mode ? 1 : 0,
@@ -1364,7 +1379,9 @@ static config_load_status_t load_runtime_config_state(runtime_config_state_t *st
             attach_backend_name(state->cfg.ufs_backend),
             state->cfg.lvd_sector_exfat, state->cfg.lvd_sector_ufs,
             state->cfg.lvd_sector_pfs, state->cfg.md_sector_exfat,
-            state->cfg.md_sector_ufs, state->cfg.scan_interval_us / 1000000u,
+            state->cfg.md_sector_ufs, state->cfg.md_sector_pfs,
+            attach_backend_name(state->cfg.pfs_backend),
+            state->cfg.scan_interval_us / 1000000u,
             state->cfg.stability_wait_seconds, state->scan_path_count,
             image_rule_count, state->kstuff_no_pause_title_count,
             kstuff_delay_rule_count);

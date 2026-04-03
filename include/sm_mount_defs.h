@@ -39,6 +39,10 @@
 #define LVD_SECONDARY_UNIT_SINGLE_IMAGE 0x10000u
 #define MD_SECTOR_SIZE_EXFAT 512u
 #define MD_SECTOR_SIZE_UFS 512u
+// Default MD sector size for PFS images. MD historically used 512-byte
+// sectors; PFS prefers larger block sizes but we provide a sensible default
+// that can be overridden via config.
+#define MD_SECTOR_SIZE_PFS 4096u
 // Raw option bits are normalized by sceFsLvdAttachCommon before validation:
 // raw:0x1->norm:0x08, raw:0x2->norm:0x80, raw:0x4->norm:0x02, raw:0x8->norm:0x10.
 // The normalized masks are then checked against validator constraints (0x82/0x92).
