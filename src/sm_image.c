@@ -1026,7 +1026,7 @@ static bool perform_image_nmount(const char *file_path, image_fs_type_t fs_type,
     static const char *const pfs_fstypes[] = {
       DEVPFS_FSTYPE_REGULAR, DEVPFS_FSTYPE_PPR, DEVPFS_FSTYPE_TRANSACTION};
     static const char *const pfs_mkeymodes[] = {
-        DEVPFS_MKEYMODE_GD, DEVPFS_MKEYMODE_SD, DEVPFS_MKEYMODE_AC};
+      DEVPFS_MKEYMODE_SD, DEVPFS_MKEYMODE_AC, DEVPFS_MKEYMODE_GD};
     static const char *const pfs_sigverifies_signed[] = {"1"};
     static const char *const pfs_sigverifies_unsigned[] = {"0", "1"};
     static const char *const pfs_sigverifies_unknown[] = {"1", "0"};
