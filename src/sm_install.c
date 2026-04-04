@@ -610,9 +610,13 @@ static bool mount_and_install(const char *src_path, const char *title_id,
   }
 
   // Requested safety delay: wait 120 seconds after mount setup before install.
-  log_debug("  [STEP][REG] post-mount delay start (120s)");
-  sceKernelUsleep(120000000);
-  log_debug("  [STEP][REG] post-mount delay done");
+  log_debug("  [STEP][REG] post-mount delay start (120s) title=%s", title_id);
+  for (int wait_chunk = 0; wait_chunk < 4; wait_chunk++) {
+    sceKernelUsleep(30000000);
+    log_debug("  [STEP][REG] post-mount delay progress title=%s elapsed=%ds remaining=%ds",
+              title_id, (wait_chunk + 1) * 30, 120 - ((wait_chunk + 1) * 30));
+  }
+  log_debug("  [STEP][REG] post-mount delay done title=%s", title_id);
 
   // REGISTER
   // Give shell/runtime a brief settle window after nullfs mount before install API.
