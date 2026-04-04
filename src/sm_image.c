@@ -217,11 +217,11 @@ static bool try_attach_lvd_pfs_single_first(int lvd_fd,
     return false;
 
   // Force fixed PFS attach profile with no fallback probing.
-  // Requested: ver=0 sec=512 sec2=4092 raw=0x9 flags=0x1c img=0(single)
+  // Requested: ver=0 sec=512 sec2=4096 raw=0x9 flags=0x1c img=0(single)
   const uint16_t first_raw_flags = LVD_ATTACH_RAW_FLAGS_SINGLE_RO;
   req->io_version = LVD_ATTACH_IO_VERSION_V0;
   req->sector_size = 512u;
-  req->secondary_unit = 4092u;
+  req->secondary_unit = 4096u;
   req->flags = normalize_lvd_raw_flags(first_raw_flags);
   req->image_type = LVD_ATTACH_IMAGE_TYPE_SINGLE;
   req->device_id = -1;
@@ -499,7 +499,7 @@ static bool attach_lvd_backend(const char *file_path, image_fs_type_t fs_type,
 
   if (fs_type == IMAGE_FS_PFS) {
     sector_size = 512u;
-    secondary_unit = 4092u;
+    secondary_unit = 4096u;
     log_debug("  [IMG][LVD] PFS fixed attach sector profile: sec=%u sec2=%u",
               sector_size, secondary_unit);
   }
