@@ -216,12 +216,12 @@ static bool try_attach_lvd_pfs_single_first(int lvd_fd,
   if (!req || !unit_id_out)
     return false;
 
-  // First probe requested by runtime reports:
-  // ver=0 sec=512 sec2=65536 raw=0x9 flags=0x1c img=0(single)
+  // Force fixed PFS attach profile with no fallback probing.
+  // Requested: ver=0 sec=512 sec2=4092 raw=0x9 flags=0x1c img=0(single)
   const uint16_t first_raw_flags = LVD_ATTACH_RAW_FLAGS_SINGLE_RO;
   req->io_version = LVD_ATTACH_IO_VERSION_V0;
   req->sector_size = 512u;
-  req->secondary_unit = LVD_SECONDARY_UNIT_SINGLE_IMAGE;
+  req->secondary_unit = 4092u;
   req->flags = normalize_lvd_raw_flags(first_raw_flags);
   req->image_type = LVD_ATTACH_IMAGE_TYPE_SINGLE;
   req->device_id = -1;
@@ -497,27 +497,11 @@ static bool attach_lvd_backend(const char *file_path, image_fs_type_t fs_type,
   uint32_t sector_size = get_lvd_sector_size(file_path, fs_type);
   uint32_t secondary_unit = get_lvd_secondary_unit(file_path, fs_type);
 
-  // For PFS images, auto-detect the block size from the PFS superblock
-  // (offset 0x20) and use it as the LVD sector size. This ensures the
-  // physical device's sector size matches the filesystem's block size,
-  // preventing cluster-mismatch errors and avoiding unnecessary small I/O.
   if (fs_type == IMAGE_FS_PFS) {
-    uint32_t hdr_block_size = 0;
-    read_pfs_header_hints(file_path, NULL, NULL, &hdr_block_size);
-    bool valid_block_size = hdr_block_size >= PFS_BLOCK_SIZE_MIN &&
-                            hdr_block_size <= PFS_BLOCK_SIZE_MAX &&
-                            (hdr_block_size & (hdr_block_size - 1u)) == 0u;
-    if (valid_block_size) {
-      log_debug("  [IMG][LVD] PFS header blocksz=%u overrides "
-                "sector_size=%u secondary_unit=%u",
-                hdr_block_size, sector_size, secondary_unit);
-      sector_size = hdr_block_size;
-      secondary_unit = hdr_block_size;
-    } else if (hdr_block_size != 0u) {
-      log_debug("  [IMG][LVD] PFS header blocksz=%u invalid "
-                "(not power-of-2 or out of range), using config sector_size=%u",
-                hdr_block_size, sector_size);
-    }
+    sector_size = 512u;
+    secondary_unit = 4092u;
+    log_debug("  [IMG][LVD] PFS fixed attach sector profile: sec=%u sec2=%u",
+              sector_size, secondary_unit);
   }
 
   uint16_t raw_flags = get_lvd_attach_raw_flags(fs_type, mount_read_only);
@@ -535,55 +519,6 @@ static bool attach_lvd_backend(const char *file_path, image_fs_type_t fs_type,
   uint16_t attach_image_types[16];
   unsigned int attach_image_type_count = 1;
   attach_image_types[0] = get_lvd_image_type(fs_type);
-  if (fs_type == IMAGE_FS_PFS) {
-    // Empirical probe order:
-    // 1) configured ppr-candidate id first
-    // 2) remaining ppr-candidate brute-force ids
-    // 3) single-image fallback
-    // 4) pfs-save fallback
-    static const uint16_t ppr_candidate_probe_ids[] = {
-        LVD_ATTACH_IMAGE_TYPE_PFS_PPR_CANDIDATE,
-        2, 3, 4, 6, 7, 8, 9, 10, 11, 12};
-    attach_image_type_count = 0;
-    for (unsigned int i = 0;
-         i < (unsigned int)(sizeof(ppr_candidate_probe_ids) /
-                            sizeof(ppr_candidate_probe_ids[0]));
-         i++) {
-      uint16_t candidate = ppr_candidate_probe_ids[i];
-      if (candidate == LVD_ATTACH_IMAGE_TYPE_SINGLE ||
-          candidate == LVD_ATTACH_IMAGE_TYPE_PFS_SAVE_DATA) {
-        continue;
-      }
-
-      bool already_added = false;
-      for (unsigned int j = 0; j < attach_image_type_count; j++) {
-        if (attach_image_types[j] == candidate) {
-          already_added = true;
-          break;
-        }
-      }
-      if (!already_added)
-        attach_image_types[attach_image_type_count++] = candidate;
-    }
-    attach_image_types[attach_image_type_count++] = LVD_ATTACH_IMAGE_TYPE_SINGLE;
-    attach_image_types[attach_image_type_count++] =
-        LVD_ATTACH_IMAGE_TYPE_PFS_SAVE_DATA;
-
-    log_debug("  [IMG][%s] PFS image_type policy: preferred ppr_candidate=%u",
-              attach_backend_name(ATTACH_BACKEND_LVD),
-              (unsigned)LVD_ATTACH_IMAGE_TYPE_PFS_PPR_CANDIDATE);
-    for (unsigned int i = 0; i < attach_image_type_count; i++) {
-      log_debug("  [IMG][%s] PFS image_type candidate[%u]=%u(%s)",
-                attach_backend_name(ATTACH_BACKEND_LVD), i,
-                (unsigned)attach_image_types[i],
-                lvd_image_type_name(attach_image_types[i]));
-    }
-    log_debug("  [IMG][%s] PFS image_type fallback tail: single(%u) -> "
-              "pfs_save(%u)",
-              attach_backend_name(ATTACH_BACKEND_LVD),
-              (unsigned)LVD_ATTACH_IMAGE_TYPE_SINGLE,
-              (unsigned)LVD_ATTACH_IMAGE_TYPE_PFS_SAVE_DATA);
-  }
 
   int last_errno = 0;
   int ret = -1;
@@ -611,10 +546,15 @@ static bool attach_lvd_backend(const char *file_path, image_fs_type_t fs_type,
       return true;
     }
     last_errno = errno;
+    close(lvd_fd);
+    errno = last_errno;
+    g_last_lvd_attach_image_type = -1;
+    log_debug("  [IMG][%s] attach failed: fixed PFS profile only (no retries): %s",
+              attach_backend_name(ATTACH_BACKEND_LVD), strerror(errno));
+    return false;
   }
 
-  bool exhaustive_probe =
-      (fs_type == IMAGE_FS_PFS) && (attach_image_type_count > 1);
+  bool exhaustive_probe = false;
   int selected_index = -1;
   if (exhaustive_probe) {
     bool probe_success[16];
@@ -1017,102 +957,40 @@ static bool perform_image_nmount(const char *file_path, image_fs_type_t fs_type,
   unsigned int mount_flags =
       get_nmount_flags(fs_type, mount_read_only, &mount_mode);
 
-  // For PFS, try fstype variants in order: ppr_pfs -> transaction_pfs -> pfs,
-  // then each mkeymode: GD -> SD -> AC.
-  // Also try with sigverify enabled first, then disabled as fallback.
-  // Keep retrying through all modes even after non-EPROTONOSUPPORT failures,
-  // because behavior can differ by firmware/content and mode combination.
+  // For PFS, force a single direct mount attempt with fixed settings.
   if (fs_type == IMAGE_FS_PFS) {
-    static const char *const pfs_fstypes[] = {
-      DEVPFS_FSTYPE_REGULAR, DEVPFS_FSTYPE_PPR, DEVPFS_FSTYPE_TRANSACTION};
-    static const char *const pfs_mkeymodes[] = {
-      DEVPFS_MKEYMODE_AC, DEVPFS_MKEYMODE_SD, DEVPFS_MKEYMODE_GD};
-    static const char *const pfs_sigverifies_signed[] = {"1"};
-    static const char *const pfs_sigverifies_unsigned[] = {"0", "1"};
-    static const char *const pfs_sigverifies_unknown[] = {"1", "0"};
-    const char *const *pfs_sigverifies = pfs_sigverifies_unknown;
-    unsigned int pfs_sigverify_count = 2;
-    bool sigverify_hint_known = false;
-    bool prefer_sigverify_on = true;
-    int pfs_mount_errno = 0;
-
-    read_pfs_header_hints(file_path, &sigverify_hint_known,
-                          &prefer_sigverify_on, NULL);
-    if (sigverify_hint_known && prefer_sigverify_on) {
-      pfs_sigverifies = pfs_sigverifies_signed;
-      pfs_sigverify_count = 1;
-      log_debug("  [IMG][%s] PFS sigverify policy: signed image hint -> enforce sigverify=1",
-                attach_backend_name(attach_backend));
-    } else if (sigverify_hint_known) {
-      pfs_sigverifies = pfs_sigverifies_unsigned;
-      pfs_sigverify_count = 2;
-      log_debug("  [IMG][%s] PFS sigverify policy: unsigned image hint -> try 0 then 1 fallback",
-                attach_backend_name(attach_backend));
-    } else {
-      log_debug("  [IMG][%s] PFS sigverify policy: unknown image hint -> try 1 then 0 fallback",
-                attach_backend_name(attach_backend));
+    const char *fstype_attempt = DEVPFS_FSTYPE_REGULAR;
+    iov_pfs[5].iov_base = (void *)fstype_attempt;
+    iov_pfs[5].iov_len = strlen(fstype_attempt) + 1;
+    iov_pfs[9].iov_base = (void *)PFS_MOUNT_MKEYMODE;
+    iov_pfs[9].iov_len = strlen(PFS_MOUNT_MKEYMODE) + 1;
+    iov_pfs[11].iov_base = (void *)DEVPFS_BUDGET_GAME;
+    iov_pfs[11].iov_len = strlen(DEVPFS_BUDGET_GAME) + 1;
+    memset(mount_errmsg, 0, sizeof(mount_errmsg));
+    log_debug("  [IMG][%s] PFS fstype=%s ro=%d budgetid=%s mkeymode=%s "
+              "sigverify=%s playgo=%s disc=%s ekpfs=zero",
+              attach_backend_name(attach_backend), fstype_attempt,
+              mount_read_only ? 1 : 0, DEVPFS_BUDGET_GAME,
+              PFS_MOUNT_MKEYMODE, sigverify, playgo, disc);
+    if (nmount(iov, iovlen, (int)mount_flags) == 0) {
+      log_debug("  [IMG][%s] PFS mount successful with fstype=%s "
+                "sigverify=%s mkeymode=%s",
+                attach_backend_name(attach_backend), fstype_attempt,
+                sigverify, PFS_MOUNT_MKEYMODE);
+      return true;
     }
 
-    for (unsigned int fi = 0; fi < 3; fi++) {
-      const char *fstype_attempt = pfs_fstypes[fi];
-      // iov_pfs[5] is the fstype value slot.
-      iov_pfs[5].iov_base = (void *)fstype_attempt;
-      iov_pfs[5].iov_len = strlen(fstype_attempt) + 1;
-
-      for (unsigned int si = 0; si < pfs_sigverify_count; si++) {
-        const char *sigverify_attempt = pfs_sigverifies[si];
-        for (unsigned int mi = 0; mi < 3; mi++) {
-          // iov_pfs[7] is the sigverify value slot
-          // iov_pfs[9] is the mkeymode value slot
-          iov_pfs[7].iov_base = (void *)sigverify_attempt;
-          iov_pfs[7].iov_len  = strlen(sigverify_attempt) + 1;
-          iov_pfs[9].iov_base = (void *)pfs_mkeymodes[mi];
-          iov_pfs[9].iov_len  = strlen(pfs_mkeymodes[mi]) + 1;
-          memset(mount_errmsg, 0, sizeof(mount_errmsg));
-          log_debug("  [IMG][%s] PFS fstype=%s ro=%d budgetid=%s mkeymode=%s "
-                    "attempt_mkeymode=%s sigverify=%s playgo=%s disc=%s "
-                    "ekpfs=zero",
-                    attach_backend_name(attach_backend), fstype_attempt,
-                    mount_read_only ? 1 : 0, PFS_MOUNT_BUDGET_ID,
-                    PFS_MOUNT_MKEYMODE, pfs_mkeymodes[mi], sigverify_attempt,
-                    playgo, disc);
-          if (nmount(iov, iovlen, (int)mount_flags) == 0) {
-            log_debug("  [IMG][%s] PFS mount successful with fstype=%s "
-                      "sigverify=%s mkeymode=%s",
-                      attach_backend_name(attach_backend), fstype_attempt,
-                      sigverify_attempt, pfs_mkeymodes[mi]);
-            return true;
-          }
-          pfs_mount_errno = errno;
-          if (mount_errmsg[0] != '\0')
-            log_debug("  [IMG][%s] nmount %s fstype=%s sigverify=%s "
-                      "mkeymode=%s errmsg: %s",
-                      attach_backend_name(attach_backend), mount_mode,
-                      fstype_attempt, sigverify_attempt, pfs_mkeymodes[mi],
-                      mount_errmsg);
-          log_debug("  [IMG][%s] nmount %s fstype=%s sigverify=%s "
-                    "mkeymode=%s failed: %s",
-                    attach_backend_name(attach_backend), mount_mode,
-                    fstype_attempt, sigverify_attempt, pfs_mkeymodes[mi],
-                    strerror(pfs_mount_errno));
-        }
-        if (si == 0 && pfs_sigverify_count > 1) {
-          log_debug("  [IMG][%s] All fstype=%s sigverify=%s attempts failed, "
-                    "trying next sigverify mode",
-                    attach_backend_name(attach_backend), fstype_attempt,
-                    sigverify_attempt);
-        }
-      }
-
-      if (fi == 0) {
-        log_debug("  [IMG][%s] All ppr_pfs attempts failed, trying "
-                  "transaction_pfs fallback",
-                  attach_backend_name(attach_backend));
-      } else if (fi == 1) {
-        log_debug("  [IMG][%s] All transaction_pfs attempts failed, trying "
-                  "pfs fallback", attach_backend_name(attach_backend));
-      }
-    }
+    int pfs_mount_errno = errno;
+    if (mount_errmsg[0] != '\0')
+      log_debug("  [IMG][%s] nmount %s fstype=%s sigverify=%s mkeymode=%s "
+                "errmsg: %s",
+                attach_backend_name(attach_backend), mount_mode,
+                fstype_attempt, sigverify, PFS_MOUNT_MKEYMODE, mount_errmsg);
+    log_debug("  [IMG][%s] nmount %s fstype=%s sigverify=%s mkeymode=%s "
+              "failed: %s",
+              attach_backend_name(attach_backend), mount_mode,
+              fstype_attempt, sigverify, PFS_MOUNT_MKEYMODE,
+              strerror(pfs_mount_errno));
     (void)detach_attached_unit(attach_backend, unit_id);
     errno = pfs_mount_errno;
     return false;
